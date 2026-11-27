@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.3.1] - 2026-11-27
+
+### Fixed
+- Tracearr: `np` said "nothing playing on tracearr" while streams were running. The bot asked for
+  `/api/v2/public/streams?summary=true`, which Tracearr answers with the counts only and no stream list. It now
+  asks without `summary=true`, and a response that counts streams but lists none is an error, so `np` falls back to
+  the direct servers instead of reporting nothing
+
 ## [0.3.0] - 2026-11-27
 
 ### Added
@@ -88,7 +96,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   store as well as the built-in Mozilla roots
 
 
-[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/cbodden/mediabot/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/cbodden/mediabot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cbodden/mediabot/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/cbodden/mediabot/compare/v0.1.0...v0.1.1

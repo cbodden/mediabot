@@ -202,6 +202,16 @@ pub fn parse_libraries(v: &Value, names: &HashMap<String, String>) -> Vec<Librar
     out
 }
 
+/// A streams response that counts streams but lists none would read as "nothing playing" - refuse
+/// it instead (it's what `summary=true` returns).
+pub fn check_streams_response(v: &Value) -> Result<()> {
+    let total = n(&v["summary"], "total").unwrap_or(0.0);
+    if total > 0.0 && !v["data"].is_array() {
+        bail!("Tracearr reported {total} stream(s) but sent no stream list");
+    }
+    Ok(())
+}
+
 /// `GET /api/v1/public/stats/today`.
 pub fn parse_today(v: &Value) -> Today {
     let i = |k| n(v, k).unwrap_or(0.0) as i64;
@@ -279,11 +289,11 @@ impl Service {
 
     pub(crate) async fn tracearr_activity(&self) -> Result<Activity> {
         self.ensure_tracearr()?;
-        Ok(parse_streams(
-            &self
-                .get("/api/v2/public/streams", &[("summary", "true".into())])
-                .await?,
-        ))
+        // No `summary=true`: Tracearr treats it as "summary only" and leaves out `data` (the
+        // streams). Without it the response carries both.
+        let v = self.get("/api/v2/public/streams", &[]).await?;
+        check_streams_response(&v)?;
+        Ok(parse_streams(&v))
     }
 
     pub(crate) async fn tracearr_libraries(&self) -> Result<Vec<Library>> {
@@ -379,11 +389,43 @@ mod tests {
 
     #[test]
     fn idle_streams() {
-        // what an idle instance really returns: no data key, a display-string bitrate
-        let a =
-            parse_streams(&json!({"summary": {"total": 0, "total_bitrate": "—", "by_server": []}}));
+        // idle: an empty list and a display-string bitrate
+        let v = json!({"data": [], "summary": {"total": 0, "total_bitrate": "—", "by_server": []}});
+        check_streams_response(&v).unwrap();
+        let a = parse_streams(&v);
         assert!(a.streams.is_empty());
         assert_eq!(a.bandwidth_kbps, Some(0.0));
+    }
+
+    #[test]
+    fn summary_only_response_is_an_error() {
+        // what `?summary=true` really returns while something plays: counts, no `data`.
+        // Reading it as "nothing playing" was the bug.
+        let v = json!({"summary": {"total": 1, "transcodes": 1, "total_bitrate": "1.0 Mbps", "by_server": []}});
+        let err = check_streams_response(&v).unwrap_err().to_string();
+        assert!(err.contains("1 stream(s)"), "{err}");
+    }
+
+    #[test]
+    fn real_shape_episode_stream() {
+        // shape of a real v3.2.1 response without `summary=true` (values made up)
+        let v = json!({
+            "data": [{"server_name": "Emby", "username": "someone", "media_type": "episode",
+                "media_title": "Shadowman 9", "show_title": "Some Show", "season_number": 3,
+                "episode_number": 7, "state": "playing", "progress_ms": 600000, "duration_ms": 1320000,
+                "is_transcode": true, "video_decision": "transcode", "bitrate": 1033,
+                "resolution": "1080p", "device": "Browser", "player": "Google Chrome Linux"}],
+            "summary": {"total": 1, "transcodes": 1, "total_bitrate": "1.0 Mbps"}
+        });
+        check_streams_response(&v).unwrap();
+        let a = parse_streams(&v);
+        assert_eq!(a.streams.len(), 1);
+        let s = &a.streams[0];
+        assert_eq!(s.title, "Some Show S03E07 - Shadowman 9");
+        assert_eq!((s.transcode, s.paused), (true, false));
+        assert_eq!(s.server.as_deref(), Some("Emby"));
+        assert_eq!(s.player, "Browser");
+        assert_eq!(a.bandwidth_kbps, Some(1033.0));
     }
 
     #[test]
