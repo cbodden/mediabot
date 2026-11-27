@@ -1,167 +1,484 @@
 # mediabot
 
-An IRC bot (Rust) for Libera.Chat that reports on your media stack:
+[![ci](https://github.com/cbodden/mediabot/actions/workflows/ci.yml/badge.svg)](https://github.com/cbodden/mediabot/actions/workflows/ci.yml)
+[![docker images](https://github.com/cbodden/mediabot/actions/workflows/docker-images.yml/badge.svg)](https://github.com/cbodden/mediabot/actions/workflows/docker-images.yml)
+[![release](https://img.shields.io/github/v/release/cbodden/mediabot)](https://github.com/cbodden/mediabot/releases)
+[![license](https://img.shields.io/github/license/cbodden/mediabot)](LICENSE)
 
-- **Media servers** — Plex, Emby, Jellyfin, [Tofa](https://tofa.tv), Tautulli (Plex stats): now playing, transcodes, bandwidth, library counts
-- **Requests** — Seerr (Overseerr / Jellyseerr API): search, request, list, approve/decline
-- **\*arr** — Sonarr, Radarr, Lidarr: queue, upcoming, missing, library lookup, health
-- **Ownership** — owners (config) → admins → read-only users, keyed on NickServ accounts
-- **Web panel** — local HTTP(S) control panel with a command console, users, channels, services, live logs
-- **Telemetry** — Prometheus `/metrics`, logs + audit trail to Loki, a ready-made Grafana dashboard
+An IRC bot for [Libera.Chat](https://libera.chat), written in Rust, that answers questions about your
+self-hosted media stack and lets trusted people act on it.
 
-## Quick start
+```
+<you>      !np
+<mediabot> plex: 2 stream(s), 1 transcoding, 12.0 Mbps
+<mediabot>   ▶ alice — Severance S01E01 - Pilot [1080p, transcode] 50% on Living Room
+<mediabot>   ⏸ bob — Dune (2021) [4k, direct] 10% on Plex Web
+<you>      !search the matrix
+<mediabot> [movie 603] The Matrix (1999) — available
+<you>      !sonarr upcoming
+<mediabot> sonarr: next 7 days
+<mediabot>   2026-11-28 02:00Z  Severance S02E04 - Woe's Hollow
+```
+
+| Area | Services | What you get |
+|---|---|---|
+| Media servers | Plex, Emby, Jellyfin, [Tofa](https://tofa.tv), Tautulli | who's watching what, transcodes, bandwidth, library counts |
+| Requests | Seerr (also Overseerr, Jellyseerr) | search, list, request, approve / decline |
+| Downloads | Sonarr, Radarr, Lidarr | queue, upcoming releases, missing items, library lookup, health |
+| Access | — | owners → admins → read-only users, tied to NickServ accounts |
+| Control | — | a local web panel (HTTP or HTTPS) with a command console |
+| Monitoring | Prometheus, Loki, Grafana | `/metrics`, log shipping with an audit trail, a ready-made dashboard |
+
+Images for **amd64 and arm64** (Alpine, ~4.5 MB): `cbodden/mediabot` on Docker Hub and
+`ghcr.io/cbodden/mediabot`.
+
+## Contents
+
+1. [Set up](#set-up) — five steps from nothing to a working bot
+2. [Using the bot](#using-the-bot) — roles, users and every command
+3. [Web panel](#web-panel)
+4. [Monitoring](#monitoring) — Prometheus, Grafana, Loki
+5. [Configuration reference](#configuration-reference)
+6. [Docker reference](#docker-reference)
+7. [Supported services](#supported-services)
+8. [Troubleshooting](#troubleshooting)
+9. [Development and releases](#development-and-releases)
+
+---
+
+## Set up
+
+### 1. Give the bot a Libera account
+
+The bot logs in with SASL, which Libera requires from many hosting and VPN address ranges.
+From any IRC client:
+
+```
+/nick mediabot
+/msg NickServ REGISTER <password> <email>
+/msg NickServ VERIFY REGISTER mediabot <code-from-the-email>
+```
+
+Also find **your own** account name, since owners are set by account, not by nick:
+`/msg NickServ INFO <your-nick>` (or `/whois <your-nick>` → "is logged in as …").
+
+Ask the channel's operators before bringing a bot in.
+
+### 2. Collect the API keys
+
+You only need the services you run.
+
+| Service | `kind` | Default URL | Where to find the key |
+|---|---|---|---|
+| Plex | `plex` | `http://host:32400` | your `X-Plex-Token` ([how to find it](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)) |
+| Jellyfin | `jellyfin` | `http://host:8096` | Dashboard → API Keys → **+** |
+| Emby | `emby` | `http://host:8096` | Settings → Advanced → API Keys → **New API Key** |
+| Tofa | `tofa` | `http://host:33333` | Admin → Settings → API → API keys ("Read only" is enough) |
+| Tautulli | `tautulli` | `http://host:8181` | Settings → Web Interface → API (enable, then copy) |
+| Seerr / Overseerr / Jellyseerr | `seerr` | `http://host:5055` | Settings → General → API Key |
+| Sonarr / Radarr / Lidarr | `sonarr` / `radarr` / `lidarr` | `:8989` / `:7878` / `:8686` | Settings → General → Security → API Key |
+
+### 3. Write `config.toml`
+
+Copy the fully commented [`config.example.toml`](config.example.toml) and edit it. This is the smallest useful
+config:
+
+```toml
+[irc]
+nick = "mediabot"
+sasl_password = "${MEDIABOT_SASL_PASSWORD}"
+channels = [{ name = "#my-media" }]
+
+[bot]
+owners = ["your-nickserv-account"]
+
+[web]
+password = "${MEDIABOT_WEB_PASSWORD}"
+
+[[service]]
+kind = "plex"
+url = "http://plex:32400"
+api_key = "${PLEX_TOKEN}"
+```
+
+`${NAME}` is replaced with the environment variable `NAME`, which keeps secrets out of the file. A variable
+that isn't set stops the bot at startup instead of silently becoming an empty password.
+
+### 4. Run it
+
+**Docker (recommended)**, using the sample [`docker-compose.yml`](docker-compose.yml):
+
+```sh
+mkdir mediabot && cd mediabot
+curl -LO https://raw.githubusercontent.com/cbodden/mediabot/main/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/cbodden/mediabot/main/.env.example
+curl -L -o config.toml https://raw.githubusercontent.com/cbodden/mediabot/main/config.example.toml
+cp .env.example .env        # fill in the passwords and keys
+$EDITOR config.toml         # step 3
+docker compose up -d
+docker compose logs -f      # watch for "registered on irc.libera.chat as mediabot"
+```
+
+**From source** (Rust 1.88+):
 
 ```sh
 cargo build --release
-cp config.example.toml config.toml        # edit: nick, channels, owners, services
-export MEDIABOT_SASL_PASSWORD=... MEDIABOT_WEB_PASSWORD=... SONARR_API_KEY=...  # etc.
-./target/release/mediabot --config config.toml --check   # validate
+./target/release/mediabot --config config.toml --check   # validate only
 ./target/release/mediabot --config config.toml
 ```
 
-Open <http://127.0.0.1:8088> (basic auth from `[web]`).
+**As a service:** [`deploy/mediabot.service`](deploy/mediabot.service) is a hardened systemd unit (secrets in
+`/etc/mediabot/env`, state in `/var/lib/mediabot`).
 
-**On Libera:** register the bot's nick with NickServ first (`/msg NickServ REGISTER …`) and set
-`sasl_password`. Libera requires SASL from many hosting ranges, and the bot uses SASL PLAIN.
-If the nick is taken by a ghost, the bot takes it back with `NickServ REGAIN`.
+### 5. Check it works
 
-Any config value can be `${ENV_VAR}`. A missing variable is a startup error, never an empty string.
+1. Open <http://127.0.0.1:8088> and log in with `[web] username` (default `admin`) and your password.
+   The **IRC** card should say *connected*, and **Services** should show each backend as *up*.
+2. In the channel, type `!whoami`. It should report your account and `role: owner`.
+3. Type `!status` for every backend's version, then `!help`.
 
-## Ownership and roles
+If something's wrong, see [Troubleshooting](#troubleshooting).
 
-| Role | Who | Can |
+---
+
+## Using the bot
+
+### Talking to it
+
+- In a channel, start with the prefix (default `!`): `!np`. Or address it by name: `mediabot: np`.
+- In a private message, the prefix is optional: `/msg mediabot queue`.
+- Long answers are cut at `max_lines` lines (default 8) in channels, and three times that in a PM.
+- `!<service> [command]` targets one service: `!plex`, `!sonarr upcoming 14`, `!radarr4k queue`.
+  With no command it means `np` for media servers, `requests` for Seerr and `queue` for the \*arrs.
+
+### Roles
+
+| Role | How someone gets it | What they can do |
 |---|---|---|
-| owner | `bot.owners` in the config (NickServ accounts) | everything, including `join`/`part`; grants/revokes admins |
-| admin | added at runtime | `request`, `approve`, `decline`, manage read-only users |
-| readonly | added at runtime, or a channel's `default_role` | all read commands |
-| none | everyone else | ignored (only `whoami` answers) |
+| **owner** | listed in `[bot] owners` (config only) | everything, including `join` / `part`, granting and removing admins |
+| **admin** | `!users add <account> admin` (by an owner) | `request`, `approve`, `decline`, add and remove read-only users |
+| **readonly** | `!users add <account> readonly`, or a channel's `default_role` | every read command |
+| **none** | everyone else | ignored, except `whoami` |
 
-Identity comes from the IRCv3 `account-tag` capability, so it is tied to the **NickServ account,
-not the nick**. Changing nick can't impersonate anyone. For people without an account you can add a
-hostmask glob such as `*!*@user/alice` instead.
+- **Identity is the NickServ account**, delivered by the IRCv3 `account-tag` capability, so changing nick
+  can't impersonate anyone.
+- For someone without an account, add a hostmask glob instead, such as `*!*@user/alice`.
+- Non-admins are rate-limited to one command per `cooldown_ms` (default 2 s).
 
-Users live in `data_dir/state.json`, along with channels joined at runtime. Manage them from IRC:
+### Managing users
 
 ```
-!users add alice readonly
-!users add bob admin            (owners only)
+!users                       list owners, admins and read-only users
+!users add alice readonly    add or update (also: ro, read)
+!users add bob admin         owners only
 !users del alice
-!users list
 ```
 
-or from the **Users** card in the web panel.
+Users, and channels joined at runtime, are saved to `state.json` in `data_dir`. The web panel's **Users**
+card does the same.
 
-## Commands
+### Commands
 
-Prefix defaults to `!`. You can also address the bot (`mediabot: np`), or PM it without a prefix.
-Replies in channels are capped at `max_lines` (PMs get 3×).
+`!help` lists the commands available to you, and `!help <command>` shows usage and aliases.
 
-| Command | Role | |
+**General**
+
+| Command | Role | Does |
 |---|---|---|
-| `help [cmd]`, `whoami`, `status` | ro / none / ro | help, your identity, backend health + versions |
-| `np [server]` | ro | now playing across Plex/Emby/Jellyfin/Tofa/Tautulli |
-| `libs [server]` | ro | library counts |
-| `search <title>` | ro | Seerr search with availability + TMDB ids |
-| `requests [pending\|approved\|…]` | ro | Seerr request list |
-| `request <movie\|tv> <tmdb-id> [1,2]` | admin | create a Seerr request (TV defaults to all seasons) |
-| `approve <id>` / `decline <id>` | admin | moderate Seerr requests |
-| `queue [svc]`, `upcoming [svc] [days]`, `missing [svc]`, `health [svc]` | ro | \*arr info |
-| `lookup <svc> <term>` | ro | look up a series/movie/artist and whether it's in the library |
-| `users …` | admin | see above |
-| `join <#chan> [default-role] [key]`, `part <#chan>` | owner | persisted |
+| `help [command]` | readonly | list commands, or detail one |
+| `whoami` | anyone | your hostmask, account and role |
+| `status` | readonly | bot uptime and channels, then each service as ✓ version or ✗ error |
 
-Shorthand: `!<service> [command]`, e.g. `!sonarr upcoming 14`, `!radarr4k queue`, `!plex`.
-Service names come from `name` in the config (default: the kind), so you can run several of the
-same kind, such as `sonarr` and `sonarr4k`.
+**Media servers** (Plex, Emby, Jellyfin, Tofa, Tautulli)
+
+| Command | Role | Does |
+|---|---|---|
+| `np [service]` | readonly | each stream: user, title, quality, transcode or direct, progress, device; plus bandwidth |
+| `libs [service]` | readonly | items per library (with episodes / tracks where known) |
+
+**Requests** (Seerr). Requests are created as the user who owns the Seerr API key.
+
+| Command | Role | Does |
+|---|---|---|
+| `search <title>` | readonly | up to 5 movies / shows with TMDB id and availability |
+| `requests [filter]` | readonly | up to 6 requests; filter is `pending` (default), `approved`, `processing`, `available`, `unavailable`, `failed`, `completed`, `deleted` or `all` |
+| `request <movie\|tv> <tmdb-id> [seasons]` | admin | request it; TV gets all seasons unless you list them, e.g. `1,2` |
+| `approve <id>` / `decline <id>` | admin | moderate a request (ids come from `requests`) |
+
+**Downloads** (Sonarr, Radarr, Lidarr). With no service named, every configured \*arr answers.
+
+| Command | Role | Does |
+|---|---|---|
+| `queue [service]` | readonly | queue size, then up to 5 items with progress and time left |
+| `upcoming [service] [days]` | readonly | releases in the next 7 days (1–60), up to 6 per service |
+| `missing [service]` | readonly | count of monitored items without files, plus up to 5 |
+| `lookup <service> <term>` | readonly | up to 4 matches, saying whether each is in the library (and how complete) |
+| `health [service]` | readonly | warnings from the \*arr's own health checks |
+
+**Admin**
+
+| Command | Role | Does |
+|---|---|---|
+| `users …` | admin | see [Managing users](#managing-users) |
+| `join <#channel> [none\|readonly] [key]` | owner | join and remember the channel; the role is what unknown users get there |
+| `part <#channel>` | owner | leave and forget the channel |
+
+---
 
 ## Web panel
 
-`[web] listen` defaults to `127.0.0.1:8088`. Set `tls_cert`/`tls_key` for HTTPS, or put it behind
-a reverse proxy. The panel shows IRC state (reconnect button), service health with per-service
-**Test**, users, channels (join/part), send-a-message, a **command console** (runs any bot command
-as owner), and live logs.
+Served on `[web] listen` (default `127.0.0.1:8088`), behind HTTP basic auth. It has cards for:
 
-The API is JSON under `/api/*` (same basic auth). State-changing requests must send an
-`X-Mediabot: 1` header; this is CSRF protection, since browsers re-send cached basic-auth
-credentials to cross-site requests.
+- **IRC**: server, nick, account, channels, uptime, last error, and a **Reconnect** button
+- **Services**: up or down, version, a summary, last poll and latency, plus a **Test** button
+- **Users** and **Channels**: add, remove, join and part
+- **Console**: runs any bot command as an owner, without IRC
+- **Send message**: to a channel or nick
+- **Logs**: live, info level and above
 
-## Metrics, logs, Grafana
+For HTTPS, set `tls_cert` and `tls_key` (PEM files), or put it behind a reverse proxy. Keep it off the public
+internet without TLS.
 
-- `GET /metrics` (no auth unless `metrics_auth = true`). All series are prefixed `mediabot_`:
-  - bot: `irc_connected`, `irc_reconnects_total`, `irc_lines_total`, `irc_channels`, `commands_total{command,result}`, `command_duration_seconds`, `acl_users{role}`
-  - backends: `service_up`, `service_requests_total`, `service_request_duration_seconds`
-  - media: `streams{service,decision}`, `stream_bandwidth_kbps`, `library_items{library,type}`
-  - requests: `seerr_requests{status}` (the raw Seerr counts: pending, approved, processing, available, declined, plus movie/tv/total)
-  - \*arr: `arr_queue`, `arr_items`, `arr_missing`, `arr_health_issues{type}`
-- Fast poll every `poll_interval_secs` (sessions, queues, counts). Library and missing totals
-  are polled every `slow_poll_every` polls, because Radarr's movie list can be large.
-- `[telemetry.loki]` ships all logs with labels `app=mediabot`, `host`, `level`, plus your own
-  labels. Admin actions (requests, approvals, ACL changes, joins, web actions) are logged with
-  target `audit`.
-- `deploy/prometheus-scrape.yml` is a scrape job; `deploy/grafana-dashboard.json` is a dashboard
-  (Prometheus + Loki datasource pickers) to import.
+### JSON API
 
-## Docker
+Same basic auth. Every request other than GET must also send the header `X-Mediabot: 1`. That is CSRF
+protection: browsers re-send cached basic-auth credentials on cross-site requests, but they can't add custom
+headers to them.
 
-Multi-arch images (**amd64 + arm64**) on Alpine, about 4.5 MB to pull, holding a static musl binary,
-`ca-certificates` and nothing else. The container runs as uid 10001.
-
-| registry | image |
+| Method and path | Purpose |
 |---|---|
-| GitHub | `ghcr.io/cbodden/mediabot` |
-| Docker Hub | `cbodden/mediabot` |
-
-| tag | built from |
-|---|---|
-| `:latest` | `main` (also rebuilt every Monday for Alpine updates) |
-| `:test` | `testing` |
-| `:X.Y.Z` | release tag `vX.Y.Z` |
+| `GET /healthz` | liveness, no auth |
+| `GET /metrics` | Prometheus, no auth unless `metrics_auth = true` |
+| `GET /api/status` | version, start time, IRC state, services up / total |
+| `GET /api/services` | per-service status |
+| `POST /api/services/{name}/test` | check a service now, returns version and latency |
+| `GET /api/users` · `POST /api/users` `{"id","role"}` · `DELETE /api/users/{id}` | access list |
+| `GET /api/channels` · `POST /api/channels` `{"name","key"?,"default_role"}` · `POST /api/channels/part` `{"name"}` | channels |
+| `POST /api/say` `{"target","text"}` | send a message |
+| `POST /api/command` `{"command"}` | run a bot command, returns `{"lines":[…]}` |
+| `POST /api/reconnect` | reconnect to IRC |
+| `GET /api/logs?since=<seq>` | log lines newer than `seq` (the last 1000 are kept) |
 
 ```sh
-cp config.example.toml config.toml   # nick, channels, owners, [[service]] entries
-cp .env.example .env                 # the secrets config.toml references as ${VAR}
-docker compose up -d                 # sample docker-compose.yml in the repo root
+curl -u admin:$PW -H 'X-Mediabot: 1' -H 'Content-Type: application/json' \
+     -d '{"command":"queue"}' http://127.0.0.1:8088/api/command
 ```
 
-In the container:
-- `/config/config.toml` is the config. Mount it read-only.
-- `/data` holds the state (`state.json`: users and channels). Use a named volume, or a bind mount
-  owned by uid 10001.
-- The panel listens on `0.0.0.0:8088`. Publish it on `127.0.0.1` unless it's behind TLS.
-- `MEDIABOT_WEB_LISTEN` and `MEDIABOT_DATA_DIR` override `[web] listen` and `[bot] data_dir`. The
-  image sets them, so the same `config.toml` works in and out of Docker.
-- `HEALTHCHECK` polls `/healthz`. It assumes the panel is enabled and serving plain HTTP.
-- To trust a private CA (for a backend or Loki), mount its PEM file into `/etc/ssl/certs/`.
-- While the repo is private, `ghcr.io` pulls need `docker login ghcr.io` with a PAT that has
-  `read:packages`.
+---
 
-Without Docker: `deploy/mediabot.service` is a systemd unit.
+## Monitoring
 
-### Building and releasing
+### Prometheus
 
-- **Images** — `.github/workflows/docker-images.yml` builds each architecture on a native GitHub runner. Bases come
-  from `mirror.gcr.io`, so builds never touch Docker Hub. It pushes to GHCR, then copies the tags to Docker Hub
-  (needs the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` repo secrets; without them that step is skipped).
-  Pushes to `testing` publish `:test`, merges to `main` publish `:latest`, and `vX.Y.Z` tags publish `:X.Y.Z`.
-- **Checks** — `.github/workflows/ci.yml` runs `cargo fmt --check`, clippy (`-D warnings`) and the tests on every
-  push and PR.
-- **Releases** — `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). To release:
-  1. In the `testing` → `main` PR, bump `version` in `Cargo.toml` and rename `## [Unreleased]` to
+The bot polls every service every `poll_interval_secs` (default 30). Library counts and missing totals are
+slower to fetch, so they're polled every `slow_poll_every` polls (default 20, about 10 minutes). Add
+[`deploy/prometheus-scrape.yml`](deploy/prometheus-scrape.yml) to your scrape configs.
+
+All series are prefixed `mediabot_`:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `irc_connected` | | 1 while registered on IRC |
+| `irc_channels` | | channels joined |
+| `irc_reconnects_total` | | connection attempts |
+| `irc_lines_total` | `direction` | protocol lines in / out |
+| `commands_total` | `command`, `result` | commands handled (`ok`, `error`, `denied`) |
+| `command_duration_seconds` | `command` | histogram |
+| `acl_users` | `role` | users per role |
+| `service_up` | `service`, `kind` | 1 if the last poll worked |
+| `service_requests_total` | `service`, `kind`, `result` | HTTP calls to backends |
+| `service_request_duration_seconds` | `service`, `kind` | histogram |
+| `streams` | `service`, `kind`, `decision` | active streams, `transcode` or `direct` |
+| `stream_bandwidth_kbps` | `service`, `kind` | total streaming bandwidth |
+| `library_items` | `service`, `kind`, `library`, `type` | items per library; `<type>_children` = episodes / tracks |
+| `seerr_requests` | `service`, `status` | Seerr's request counts (`pending`, `approved`, `processing`, `available`, `declined`, `movie`, `tv`, `total`) |
+| `arr_queue` · `arr_items` · `arr_missing` | `service`, `kind` | queue size, items managed, monitored-but-missing |
+| `arr_health_issues` | `service`, `kind`, `type` | health check issues by level |
+| `build_info` · `start_time_seconds` | `version` | build and start time |
+
+### Grafana
+
+Import [`deploy/grafana-dashboard.json`](deploy/grafana-dashboard.json) (Dashboards → New → Import). It asks
+for a Prometheus and a Loki data source. It has 18 panels: overview stats, streams, bandwidth, queues,
+missing, health, Seerr, libraries, backend latency and errors, commands, and the audit and warning logs.
+
+### Loki
+
+Add a `[telemetry.loki]` section and every log line is pushed with the labels `app="mediabot"`, `host`,
+`level` and any you add. Requests, approvals, user changes, joins and web panel actions are logged with the
+target **`audit`**, recording who did what.
+
+```toml
+[telemetry.loki]
+url = "https://loki.example:3100"     # /loki/api/v1/push is added if missing
+labels = { env = "home" }
+# username / password for basic auth, tenant for X-Scope-OrgID
+```
+
+---
+
+## Configuration reference
+
+Every key below except `irc.nick` (and `web.password` while the panel is on) is optional.
+[`config.example.toml`](config.example.toml) has comments for all of them.
+
+### `[irc]`
+
+| Key | Default | |
+|---|---|---|
+| `server` / `port` / `tls` | `irc.libera.chat` / `6697` / `true` | |
+| `nick` | **required** | |
+| `username` / `realname` | nick / `mediabot - media server stats` | |
+| `sasl_account` / `sasl_password` | nick / none | no password means no SASL |
+| `sasl_required` | `true` | disconnect (and retry) if SASL fails, rather than continue unidentified |
+| `channels` | `[]` | list of `{ name, key?, default_role? }`; `default_role` is `none` (default) or `readonly` |
+| `flood_burst` / `flood_interval_ms` | `4` / `1500` | outgoing rate limit: a burst, then one line per interval |
+| `rejoin_on_kick` | `true` | rejoin after 10 s |
+
+### `[bot]`
+
+| Key | Default | |
+|---|---|---|
+| `prefix` | `"!"` | |
+| `owners` | `[]` | NickServ account names |
+| `default_role` | `"none"` | role for unknown users in private messages |
+| `max_lines` | `8` | reply cap in channels (PMs get 3×) |
+| `data_dir` | `"data"` | where `state.json` lives |
+| `poll_interval_secs` | `30` | metrics poll interval (minimum 5) |
+| `slow_poll_every` | `20` | library and missing totals every N polls |
+| `cooldown_ms` | `2000` | per-user command interval for non-admins |
+
+### `[web]`
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | |
+| `listen` | `127.0.0.1:8088` | |
+| `username` / `password` | `admin` / **required if enabled** | |
+| `tls_cert` / `tls_key` | none | PEM paths, set both for HTTPS |
+| `metrics_auth` | `false` | require basic auth on `/metrics` too |
+
+### `[telemetry]`
+
+| Key | Default | |
+|---|---|---|
+| `log_level` | `info` | `RUST_LOG` overrides it; `debug` shows raw IRC traffic (SASL redacted) |
+| `json_logs` | `false` | JSON lines on stdout |
+| `[telemetry.loki]` | off | `url`, `labels`, `username`, `password`, `tenant` |
+
+### `[[service]]` (repeat for each)
+
+| Key | Default | |
+|---|---|---|
+| `kind` | **required** | `plex`, `emby`, `jellyfin`, `tofa`, `tautulli`, `seerr`, `sonarr`, `radarr`, `lidarr` |
+| `url` / `api_key` | **required** | base URL (a sub-path like `/sonarr` is fine) |
+| `name` | the kind | unique; used in commands and metric labels, so set it to run two of a kind (`sonarr4k`) |
+| `verify_tls` | `true` | `false` for self-signed certificates |
+| `timeout_secs` | `10` | per request |
+
+### Environment variables
+
+| Variable | |
+|---|---|
+| `MEDIABOT_CONFIG` | config path (default `config.toml`; also `--config`) |
+| `MEDIABOT_WEB_LISTEN` | overrides `[web] listen` |
+| `MEDIABOT_DATA_DIR` | overrides `[bot] data_dir` |
+| `RUST_LOG` | overrides `log_level` |
+| anything else | available to the config as `${NAME}` |
+
+---
+
+## Docker reference
+
+| Registry | Image |
+|---|---|
+| Docker Hub | `cbodden/mediabot` |
+| GitHub | `ghcr.io/cbodden/mediabot` |
+
+| Tag | Built from |
+|---|---|
+| `latest` | `main`, and rebuilt every Monday to pick up Alpine fixes |
+| `X.Y.Z` | the release tag `vX.Y.Z` |
+| `test` | the `testing` branch, for trying changes before they reach `main` |
+
+Inside the image:
+
+| Path / setting | |
+|---|---|
+| `/config/config.toml` | your config, mounted read-only |
+| `/data` | state (`state.json`); a named volume, or a bind mount owned by uid **10001** (`chown 10001:10001 data`) |
+| port `8088` | web panel, `/metrics`, `/healthz`; publish it on `127.0.0.1` unless it's behind TLS |
+| `MEDIABOT_WEB_LISTEN=0.0.0.0:8088`, `MEDIABOT_DATA_DIR=/data` | set by the image, so one `config.toml` works in and out of Docker |
+| user | `mediabot` (uid 10001), not root |
+| health check | `GET /healthz` every 30 s; needs the panel enabled and on plain HTTP |
+| private CA | mount its PEM file into `/etc/ssl/certs/` for HTTPS backends or Loki |
+
+---
+
+## Supported services
+
+| Service | Auth used | API calls |
+|---|---|---|
+| Plex | `X-Plex-Token` header | `/status/sessions`, `/library/sections`, `/identity` |
+| Jellyfin | `Authorization: MediaBrowser Token="…"` | `/Sessions`, `/Items/Counts`, `/System/Info` |
+| Emby | `X-Emby-Token` header | `/Sessions`, `/Items/Counts`, `/System/Info` |
+| Tofa | `Authorization: Bearer <key>` | `/api/v1/system/playback/sessions`, `/api/v1/libraries`, `/api/v1/system/info` |
+| Tautulli | `apikey` query parameter (removed from error messages) | `/api/v2?cmd=get_activity`, `get_libraries`, `get_tautulli_info` |
+| Seerr | `X-Api-Key` header | `/api/v1/search`, `/request`, `/request/count`, `/request/{id}/approve\|decline`, `/movie/{id}`, `/tv/{id}` |
+| Sonarr / Radarr | `X-Api-Key` header | `/api/v3/queue`, `/calendar`, `/wanted/missing` or `/movie`, `/{series\|movie}/lookup`, `/health`, `/system/status` |
+| Lidarr | `X-Api-Key` header | the same under `/api/v1` with `/artist` |
+
+Notes:
+
+- **Tofa**'s API is in beta and doesn't publish response formats, so the bot reads several possible field
+  names. A library count it can't find shows as `?`. If something looks wrong,
+  [open an issue](https://github.com/cbodden/mediabot/issues) with the output of
+  `/api/v1/libraries` or `/api/v1/system/playback/sessions`.
+- **Tautulli** reports on the same Plex server you may also list as `plex`, so `np` then shows those streams
+  twice. Configure whichever you prefer.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| Log says `SASL failed (904)` | wrong `sasl_password`, or `sasl_account` isn't the registered account |
+| Connects but never joins | the channel needs `key`, is invite-only, or bans the bot (the log says `cannot join`) |
+| The bot ignores you | `!whoami` — if it says `not identified`, log in to NickServ; if `role: none`, add yourself to `owners` or `!users add` |
+| `permission denied: … needs admin` | your role is too low; an owner can raise it |
+| A service shows ✗ `HTTP 401` / `403` | wrong `api_key`, or the URL points at the wrong service |
+| A service shows ✗ `connect failed` | wrong `url`, or (in Docker) a hostname the container can't resolve |
+| HTTPS backend: certificate error | `verify_tls = false`, or mount your CA into `/etc/ssl/certs/` |
+| Panel unreachable in Docker | publish port 8088; don't override `MEDIABOT_WEB_LISTEN` to `127.0.0.1` |
+| `Permission denied` on `/data` | a bind mount must be owned by uid 10001, or use a named volume |
+| Startup error `config references unset env var X` | set `X` (for example in `.env`) |
+
+Run `mediabot --check` to validate a config without connecting. Set `RUST_LOG=debug` to see raw IRC traffic.
+
+---
+
+## Development and releases
+
+```sh
+cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
+RUST_LOG=debug cargo run -- --config config.toml
+```
+
+- **Branches**: work lands on `testing` (published as `:test`), then reaches `main` (`:latest`) by pull request.
+- **CI** ([`ci.yml`](.github/workflows/ci.yml)): format, clippy and tests on every push and pull request.
+- **Images** ([`docker-images.yml`](.github/workflows/docker-images.yml)):
+  - each architecture builds on a native runner; base images come from `mirror.gcr.io`, so Docker Hub's pull
+    limit never affects a build
+  - results go to GHCR, then are copied to Docker Hub (needs the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`
+    secrets)
+- **Releases** ([`release.yml`](.github/workflows/release.yml)), using [CHANGELOG.md](CHANGELOG.md):
+  1. In the `testing` → `main` pull request, bump `version` in `Cargo.toml` and turn `## [Unreleased]` into
      `## [X.Y.Z] - date`.
   2. After the merge, tag the merge commit: `git tag -a vX.Y.Z -m "vX.Y.Z: summary" origin/main && git push origin vX.Y.Z`.
-  3. `.github/workflows/release.yml` creates the GitHub release from that CHANGELOG section. It fails if the section is
-     missing or `Cargo.toml` doesn't match the tag.
+  3. That builds the `:X.Y.Z` images and publishes the GitHub release from the CHANGELOG section. It fails if
+     the section is missing or the tag doesn't match `Cargo.toml`.
 
-## Development
+## License
 
-```sh
-cargo test                 # unit tests: IRC parsing/splitting, ACL rules, config, encoding
-cargo clippy --all-targets
-RUST_LOG=debug cargo run   # shows raw IRC traffic (SASL payload redacted)
-```
-
-API notes: Plex uses `X-Plex-Token`; Jellyfin uses the `MediaBrowser Token=` authorization header;
-Emby uses `X-Emby-Token`; Tofa uses `Authorization: Bearer <admin API key>` against
-`/api/v1/system/playback/sessions` and `/api/v1/libraries` (Tofa doesn't publish response
-schemas yet, so fields are parsed defensively and an unknown library count shows as `?`); Tautulli uses `apikey` (scrubbed from error messages); Seerr and the
-\*arrs use `X-Api-Key`. Seerr searches are strictly percent-encoded (`%20`), as Seerr expects.
+[MIT](LICENSE)

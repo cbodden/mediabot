@@ -9,6 +9,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- README rewritten as a step-by-step guide: setup in five steps, commands grouped by task, and full
+  reference tables for configuration (with defaults), environment variables, the web API, metrics, Docker
+  and each service's API; troubleshooting table
+
 
 ## [0.1.0] - 2026-11-26
 
