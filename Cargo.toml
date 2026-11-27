@@ -1,6 +1,6 @@
 [package]
 name = "mediabot"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "IRC bot for Plex/Emby/Jellyfin/Tautulli, Seerr and the *arr stack, with a web control panel and Prometheus/Loki telemetry"
 license = "MIT"
