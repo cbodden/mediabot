@@ -1,0 +1,167 @@
+## builds the mediabot image for amd64 + arm64 on native runners
+## and pushes multi-arch tags to ghcr && docker hub
+##   build   : each platform is pushed by digest to ghcr only
+##   publish : multi-arch tags on ghcr, then copied from ghcr to docker hub - docker hub's pull limit
+##             can then only fail the docker hub copy (rerun the publish job), never the build or ghcr.
+##             without the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets the docker hub copy is skipped.
+##   testing branch -> :test
+##   main branch    -> :latest
+##   vX.Y.Z tag     -> :X.Y.Z  (must match the version in Cargo.toml)
+name: docker images
+
+on:
+  push:
+    branches: [main, testing]
+    tags: ['v*']
+    paths:
+      - 'src/**'
+      - 'web/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'config.example.toml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/docker-images.yml'
+  schedule:
+    - cron: '0 6 * * 1'   # weekly rebuild of main for base image updates
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: mediabot
+
+jobs:
+  build:
+    name: build ${{ matrix.platform.arch }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { arch: amd64, os: linux/amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, os: linux/arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "v${ver}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} but Cargo.toml says ${ver}"
+            exit 1
+          fi
+
+      ## buildkit from google's mirror of docker hub - pulling it from docker hub counts against the pull limit
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+
+      - name: login ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build && push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform.os }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}-${{ matrix.platform.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+
+      - name: login docker hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: login ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            docker.io/cbodden/${{ env.IMAGE }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=test,enable=${{ github.ref == 'refs/heads/testing' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+
+      - name: create multi-arch manifests
+        working-directory: ${{ runner.temp }}/digests
+        ## the platform digests only exist on ghcr - both registries' tags are made from them (docker hub's by copying)
+        ## ghcr first, and one registry failing (docker hub's pull limit) doesn't stop the other - the job still fails
+        ## the inspect is only done on ghcr: on docker hub it's extra reads that count against the pull limit
+        run: |
+          src=ghcr.io/${{ github.repository_owner }}/${IMAGE}
+          failed=""
+          for repo in "${src}" docker.io/cbodden/${IMAGE}; do
+            if [ "${repo#docker.io/}" != "${repo}" ] && [ -z "${DOCKERHUB_USERNAME}" ]; then
+              echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets not set - skipping docker hub"
+              continue
+            fi
+            tags=$(jq -cr --arg r "${repo}:" '.tags | map(select(startswith($r))) | map("-t " + .) | join(" ")' <<< "${DOCKER_METADATA_OUTPUT_JSON}")
+            if [ -z "${tags}" ]; then
+              echo "no tags for ${GITHUB_REF} - skipping ${repo}"
+              continue
+            fi
+            if ! docker buildx imagetools create ${tags} $(printf "${src}@sha256:%s " *); then
+              echo "::error::publishing ${repo} failed"
+              failed="${failed} ${repo}"
+              continue
+            fi
+            case "${repo}" in
+              ghcr.io/*)
+                for t in $(jq -r --arg r "${repo}:" '.tags[] | select(startswith($r))' <<< "${DOCKER_METADATA_OUTPUT_JSON}"); do
+                  docker buildx imagetools inspect "${t}"
+                done ;;
+            esac
+          done
+          [ -z "${failed}" ] || exit 1
