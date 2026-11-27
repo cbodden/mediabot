@@ -27,142 +27,321 @@ pub struct Ctx {
     pub actor: String,
 }
 
-struct Spec {
-    name: &'static str,
-    aliases: &'static [&'static str],
-    role: Role,
-    usage: &'static str,
-    help: &'static str,
+/// One chat command. This table is the single source for `!help`, the web panel's command list
+/// (`GET /api/commands`) and `docs/COMMANDS.md` (kept in sync by a test).
+#[derive(Debug, serde::Serialize)]
+pub struct Spec {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    /// Minimum role needed.
+    pub role: Role,
+    /// Section heading in the docs and the panel.
+    pub group: &'static str,
+    pub usage: &'static str,
+    /// One line, shown by `!help`.
+    pub summary: &'static str,
+    /// Longer explanation for the docs and the panel (limits, defaults, filters).
+    pub details: &'static str,
+    /// Typed without the prefix.
+    pub examples: &'static [&'static str],
 }
 
-const COMMANDS: &[Spec] = &[
+pub const GROUPS: &[&str] = &["General", "Media servers", "Requests", "Downloads", "Admin"];
+
+pub const COMMANDS: &[Spec] = &[
     Spec {
         name: "help",
         aliases: &["commands"],
         role: Role::ReadOnly,
+        group: "General",
         usage: "help [command]",
-        help: "list commands or show help for one",
+        summary: "list commands or show help for one",
+        details: "Without an argument, lists the commands your role can use. With one, shows its usage, \
+                  required role and aliases.",
+        examples: &["help", "help request"],
     },
     Spec {
         name: "whoami",
         aliases: &[],
         role: Role::None,
+        group: "General",
         usage: "whoami",
-        help: "show your identity and role",
+        summary: "show your identity and role",
+        details: "Shows your hostmask, the NickServ account the bot sees (or \"not identified\") and your \
+                  role. The only command that also answers people with no role.",
+        examples: &["whoami"],
     },
     Spec {
         name: "status",
         aliases: &["services"],
         role: Role::ReadOnly,
+        group: "General",
         usage: "status",
-        help: "backend health and versions",
+        summary: "backend health and versions",
+        details: "Bot version, uptime, server, nick and channels, then every service from the last poll: \
+                  ✓ with its version, or ✗ with the error.",
+        examples: &["status"],
     },
     Spec {
         name: "np",
         aliases: &["streams", "playing", "nowplaying"],
         role: Role::ReadOnly,
-        usage: "np [server]",
-        help: "what's playing on plex/emby/jellyfin/tautulli/tofa",
+        group: "Media servers",
+        usage: "np [service]",
+        summary: "what's playing on plex/emby/jellyfin/tofa/tautulli",
+        details: "For each media server: stream count, how many transcode, total bandwidth, then one line \
+                  per stream with user, title, quality, transcode or direct, progress and device. Servers \
+                  with nothing playing are listed together at the end.",
+        examples: &["np", "np plex", "plex"],
     },
     Spec {
         name: "libs",
         aliases: &["libraries", "library"],
         role: Role::ReadOnly,
-        usage: "libs [server]",
-        help: "library item counts",
+        group: "Media servers",
+        usage: "libs [service]",
+        summary: "library item counts",
+        details: "Items per library for each media server, with episode or track totals for shows and \
+                  music where the server reports them. An unknown count shows as ?.",
+        examples: &["libs", "libs jellyfin"],
     },
     Spec {
         name: "search",
         aliases: &["find"],
         role: Role::ReadOnly,
+        group: "Requests",
         usage: "search <title>",
-        help: "search Seerr (movies + TV) and show availability",
+        summary: "search Seerr (movies + TV) and show availability",
+        details: "Up to 5 movies and shows, each with its TMDB id and status (available, partially \
+                  available, processing, pending, not requested). Use the id with request.",
+        examples: &["search the matrix", "search severance"],
     },
     Spec {
         name: "requests",
         aliases: &["reqs"],
         role: Role::ReadOnly,
-        usage: "requests [pending|approved|processing|available|failed|all]",
-        help: "list Seerr requests (default: pending)",
+        group: "Requests",
+        usage: "requests [pending|approved|processing|available|unavailable|failed|completed|deleted|all]",
+        summary: "list Seerr requests (default: pending)",
+        details: "The total for the filter, then up to 6 requests with id, title, type, who requested it, \
+                  date and status. The id is what approve and decline take.",
+        examples: &["requests", "requests approved", "requests all"],
     },
     Spec {
         name: "request",
         aliases: &["req"],
         role: Role::Admin,
+        group: "Requests",
         usage: "request <movie|tv> <tmdb-id> [seasons e.g. 1,2]",
-        help: "create a Seerr request (ids come from !search)",
+        summary: "create a Seerr request (ids come from search)",
+        details: "Requests a movie or show by TMDB id. TV gets every season unless you list them. The \
+                  request is made as the Seerr user who owns the API key, and logged to the audit trail \
+                  with your name.",
+        examples: &[
+            "request movie 603",
+            "request tv 95396",
+            "request tv 95396 1,2",
+        ],
     },
     Spec {
         name: "approve",
         aliases: &[],
         role: Role::Admin,
+        group: "Requests",
         usage: "approve <request-id>",
-        help: "approve a pending Seerr request",
+        summary: "approve a pending Seerr request",
+        details: "Approves the request with that id (from requests). Logged to the audit trail.",
+        examples: &["approve 5"],
     },
     Spec {
         name: "decline",
         aliases: &["deny"],
         role: Role::Admin,
+        group: "Requests",
         usage: "decline <request-id>",
-        help: "decline a pending Seerr request",
+        summary: "decline a pending Seerr request",
+        details: "Declines the request with that id (from requests). Logged to the audit trail.",
+        examples: &["decline 6"],
     },
     Spec {
         name: "queue",
         aliases: &["q", "downloads"],
         role: Role::ReadOnly,
-        usage: "queue [sonarr|radarr|lidarr|name]",
-        help: "download queues",
+        group: "Downloads",
+        usage: "queue [service]",
+        summary: "download queues",
+        details: "For each Sonarr, Radarr and Lidarr (or the one named): queue size, then up to 5 items with \
+                  status, progress and time left. Empty queues are listed together at the end.",
+        examples: &["queue", "queue sonarr", "sonarr"],
     },
     Spec {
         name: "upcoming",
         aliases: &["calendar", "cal"],
         role: Role::ReadOnly,
+        group: "Downloads",
         usage: "upcoming [service] [days]",
-        help: "upcoming releases (default 7 days)",
+        summary: "upcoming releases (default 7 days)",
+        details: "Episodes, movie releases (digital, physical, cinema) and albums in the next 7 days, or 1 to \
+                  60 days if you give a number. Up to 6 per service; ✓ marks episodes already downloaded.",
+        examples: &["upcoming", "upcoming 14", "sonarr upcoming 3"],
     },
     Spec {
         name: "missing",
         aliases: &["wanted"],
         role: Role::ReadOnly,
+        group: "Downloads",
         usage: "missing [service]",
-        help: "monitored items without files",
+        summary: "monitored items without files",
+        details: "How many monitored items have no file yet, then up to 5 of them (episodes with air date, \
+                  movies, albums).",
+        examples: &["missing", "missing radarr"],
     },
     Spec {
         name: "lookup",
         aliases: &["info"],
         role: Role::ReadOnly,
+        group: "Downloads",
         usage: "lookup <service> <term>",
-        help: "look up a series/movie/artist and whether it's in the library",
+        summary: "look up a series/movie/artist and whether it's in the library",
+        details: "Searches the service's metadata source and shows up to 4 matches, saying whether each is \
+                  in your library and how complete (episodes or tracks on disk, movie downloaded or not).",
+        examples: &[
+            "lookup sonarr severance",
+            "lookup radarr dune",
+            "lookup lidarr blur",
+        ],
     },
     Spec {
         name: "health",
         aliases: &[],
         role: Role::ReadOnly,
+        group: "Downloads",
         usage: "health [service]",
-        help: "*arr health check warnings",
+        summary: "*arr health check warnings",
+        details: "The warnings and errors from each Sonarr, Radarr and Lidarr's own health checks (indexers, \
+                  download clients, disk space…). Healthy services are listed together.",
+        examples: &["health"],
     },
     Spec {
         name: "users",
         aliases: &["user", "acl"],
         role: Role::Admin,
+        group: "Admin",
         usage: "users [list | add <account|mask> <readonly|admin> | del <account|mask>]",
-        help: "manage who can use the bot",
+        summary: "manage who can use the bot",
+        details: "With no argument, lists owners, admins and read-only users. Entries are NickServ accounts, \
+                  or nick!user@host globs for people without one. Owners can add and remove admins; admins \
+                  can only add and remove read-only users. Owners themselves are set in the config file.",
+        examples: &[
+            "users",
+            "users add alice readonly",
+            "users add bob admin",
+            "users del alice",
+        ],
     },
     Spec {
         name: "join",
         aliases: &[],
         role: Role::Owner,
-        usage: "join <#channel> [default-role] [key]",
-        help: "join a channel (persisted)",
+        group: "Admin",
+        usage: "join <#channel> [none|readonly] [key]",
+        summary: "join a channel (persisted)",
+        details: "Joins the channel and remembers it across restarts. The role is what people with no user \
+                  entry get there (default none, meaning they're ignored).",
+        examples: &["join #movies", "join #family readonly"],
     },
     Spec {
         name: "part",
         aliases: &["leave"],
         role: Role::Owner,
+        group: "Admin",
         usage: "part <#channel>",
-        help: "leave a channel (persisted)",
+        summary: "leave a channel (persisted)",
+        details: "Leaves the channel and forgets it, so it isn't rejoined on restart.",
+        examples: &["part #movies"],
     },
 ];
+
+fn role_label(r: Role) -> &'static str {
+    match r {
+        Role::None => "anyone",
+        r => r.as_str(),
+    }
+}
+
+fn md_escape(s: &str) -> String {
+    s.replace('*', "\\*")
+}
+
+/// `docs/COMMANDS.md`, rendered from [`COMMANDS`]. A test keeps the file in sync.
+pub fn commands_markdown() -> String {
+    use std::fmt::Write as _;
+    let mut md = String::new();
+    let _ = write!(
+        md,
+        "# Commands\n\n\
+         <!-- generated from src/commands.rs - edit the COMMANDS table there, then run\n     \
+         UPDATE_DOCS=1 cargo test commands_doc   (CI fails if this file is out of date) -->\n\n\
+         Every command the bot understands (examples use the default nick `mediabot`). The same list is in the web panel's **Commands** card, \
+         and `!help <command>` shows any of them in IRC.\n\n\
+         ## Talking to the bot\n\n\
+         - In a channel, start with the prefix (default `!`): `!np`. Or address it by its nick: `mediabot: np`.\n\
+         - In a private message the prefix is optional: `/msg mediabot queue`.\n\
+         - `!<service> [command]` targets one service by its `name` or `kind` from the config: `!plex`, \
+         `!sonarr upcoming 14`. With no command it means `np` for media servers, `requests` for Seerr and \
+         `queue` for Sonarr / Radarr / Lidarr.\n\
+         - Answers longer than `max_lines` (default 8) are cut in channels; private messages get three times as many.\n\
+         - People below admin can run one command every `cooldown_ms` (default 2 s).\n\n\
+         ## Roles\n\n\
+         | Role | Can use |\n|---|---|\n\
+         | anyone | `whoami` only — everyone else without a role is ignored |\n\
+         | readonly | every read command |\n\
+         | admin | also `request`, `approve`, `decline` and managing read-only users |\n\
+         | owner | everything, including `join` / `part` and managing admins (owners are set in the config file) |\n\n\
+         ## Quick reference\n\n"
+    );
+    for g in GROUPS {
+        let _ = write!(md, "**{g}**\n\n| Command | Role | Does |\n|---|---|---|\n");
+        for c in COMMANDS.iter().filter(|c| c.group == *g) {
+            let _ = writeln!(
+                md,
+                "| [`{}`](#cmd-{}) | {} | {} |",
+                c.name,
+                c.name,
+                role_label(c.role),
+                md_escape(c.summary)
+            );
+        }
+        md.push('\n');
+    }
+    for g in GROUPS {
+        let _ = write!(md, "## {g}\n\n");
+        for c in COMMANDS.iter().filter(|c| c.group == *g) {
+            let _ = write!(
+                md,
+                "<a id=\"cmd-{}\"></a>\n\n### {}\n\n```\n!{}\n```\n\n",
+                c.name, c.name, c.usage
+            );
+            let _ = writeln!(md, "- **Role:** {}", role_label(c.role));
+            if !c.aliases.is_empty() {
+                let al: Vec<String> = c.aliases.iter().map(|a| format!("`{a}`")).collect();
+                let _ = writeln!(md, "- **Aliases:** {}", al.join(", "));
+            }
+            let details = c.details.split_whitespace().collect::<Vec<_>>().join(" ");
+            let _ = write!(md, "\n{}\n\n", md_escape(&details));
+            if !c.examples.is_empty() {
+                md.push_str("Examples:\n\n```\n");
+                for e in c.examples {
+                    let _ = writeln!(md, "!{e}");
+                }
+                md.push_str("```\n\n");
+            }
+        }
+    }
+    md.truncate(md.trim_end().len());
+    md.push('\n');
+    md
+}
 
 fn find(name: &str) -> Option<&'static Spec> {
     let n = name.to_ascii_lowercase();
@@ -385,12 +564,17 @@ fn help(app: &App, ctx: &Ctx, which: Option<&str>) -> Vec<String> {
                 } else {
                     format!(" (aliases: {})", s.aliases.join(", "))
                 };
-                vec![format!(
+                let mut lines = vec![format!(
                     "{B}{p}{}{B} — {} [{}]{al}",
                     s.usage,
-                    s.help,
+                    s.summary,
                     s.role.as_str()
-                )]
+                )];
+                if !s.examples.is_empty() {
+                    let ex: Vec<String> = s.examples.iter().map(|e| format!("{p}{e}")).collect();
+                    lines.push(format!("e.g. {}", ex.join("  ·  ")));
+                }
+                lines
             }
             None => vec![format!("no such command {w}")],
         };
@@ -403,7 +587,8 @@ fn help(app: &App, ctx: &Ctx, which: Option<&str>) -> Vec<String> {
     vec![
         format!("commands: {}", names.join(" ")),
         format!(
-            "{p}help <command> for details. Shorthand: {p}<service> <command>, e.g. {p}sonarr upcoming"
+            "{p}help <command> for details. Shorthand: {p}<service> <command>, e.g. {p}sonarr upcoming. \
+             Full list: docs/COMMANDS.md in the repo, or the web panel"
         ),
     ]
 }
@@ -931,5 +1116,60 @@ mod tests {
                 assert!(seen.insert(a), "{a}");
             }
         }
+    }
+
+    #[test]
+    fn command_table_is_consistent() {
+        let media = ["plex", "emby", "jellyfin", "tautulli", "tofa"];
+        let arrs = ["sonarr", "radarr", "lidarr"];
+        for c in COMMANDS {
+            assert!(
+                GROUPS.contains(&c.group),
+                "{}: unknown group {}",
+                c.name,
+                c.group
+            );
+            assert!(
+                c.usage.starts_with(c.name),
+                "{}: usage must start with the name",
+                c.name
+            );
+            assert!(!c.examples.is_empty(), "{}: needs an example", c.name);
+            for e in c.examples {
+                let mut w = e.split_whitespace();
+                let first = w.next().unwrap();
+                // `!<service> [command]` shorthand resolves the same way execute() does
+                let resolved = if let Some(s) = find(first) {
+                    s.name
+                } else if media.contains(&first) || arrs.contains(&first) || first == "seerr" {
+                    match w.next() {
+                        Some(sub) => find(sub).map(|s| s.name).unwrap_or("?"),
+                        None if media.contains(&first) => "np",
+                        None if first == "seerr" => "requests",
+                        None => "queue",
+                    }
+                } else {
+                    "?"
+                };
+                assert_eq!(resolved, c.name, "example {e:?} doesn't run {}", c.name);
+            }
+        }
+    }
+
+    /// docs/COMMANDS.md must match the table. Regenerate: UPDATE_DOCS=1 cargo test commands_doc
+    #[test]
+    fn commands_doc_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/COMMANDS.md");
+        let want = commands_markdown();
+        if std::env::var_os("UPDATE_DOCS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &want).unwrap();
+            return;
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            have == want,
+            "docs/COMMANDS.md is out of date - run: UPDATE_DOCS=1 cargo test commands_doc"
+        );
     }
 }

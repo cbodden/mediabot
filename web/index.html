@@ -49,6 +49,21 @@ pre { background: var(--code); border-radius: 8px; padding: 10px; margin: 10px 0
          background: var(--text); color: var(--bg); opacity: 0; transition: opacity .2s; pointer-events: none; }
 #toast.show { opacity: .95; }
 small { color: var(--muted); }
+code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code);
+       padding: 1px 5px; border-radius: 4px; }
+h3.grp { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 0 2px; }
+details.cmd { border-bottom: 1px solid var(--line); }
+details.cmd summary { cursor: pointer; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+                      padding: 7px 0; list-style: none; }
+details.cmd summary::-webkit-details-marker { display: none; }
+details.cmd summary::before { content: "▸"; color: var(--muted); width: 10px; }
+details.cmd[open] summary::before { content: "▾"; }
+details.cmd summary code { word-break: break-word; }
+.cmd-body { padding: 0 0 10px 18px; }
+.cmd-body p { margin: 2px 0 8px; }
+button.ex { background: var(--code); color: var(--text); border-color: var(--line); padding: 2px 8px;
+            font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#commands-empty { padding: 8px 0; }
 </style>
 </head>
 <body>
@@ -82,6 +97,21 @@ small { color: var(--muted); }
       <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Version</th><th>Summary</th><th>Polled</th><th></th></tr></thead>
       <tbody id="services"></tbody>
     </table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Commands <small>— the same list as <code>!help</code> and docs/COMMANDS.md; click an example to load it into the console</small></h2>
+    <div class="row">
+      <input id="cmd-filter" placeholder="filter by name, alias or description" autocomplete="off" aria-label="Filter commands">
+      <select id="cmd-role" aria-label="Filter by role">
+        <option value="">all roles</option>
+        <option value="none">anyone</option>
+        <option value="readonly">readonly</option>
+        <option value="admin">admin</option>
+        <option value="owner">owner</option>
+      </select>
+    </div>
+    <div id="commands"><small>loading…</small></div>
   </section>
 
   <section>
@@ -270,8 +300,54 @@ $("reconnect").addEventListener("click", async () => {
 });
 
 const safe = (f) => () => f().catch((e) => console.warn(e));
+// ---- command reference (from GET /api/commands - the same table as !help and docs/COMMANDS.md)
+let cmdData = null;
+const roleClass = { none: "muted", readonly: "muted", admin: "ok", owner: "warn" };
+const roleText = (r) => (r === "none" ? "anyone" : r);
+function useExample(text) {
+  const input = $("cmd");
+  input.value = text;
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus();
+}
+function renderCommands() {
+  if (!cmdData) return;
+  const q = $("cmd-filter").value.trim().toLowerCase();
+  const role = $("cmd-role").value;
+  const p = cmdData.prefix;
+  const out = [];
+  for (const g of cmdData.groups) {
+    const cmds = cmdData.commands.filter((c) => c.group === g
+      && (!role || c.role === role)
+      && (!q || [c.name, c.usage, c.summary, c.details, ...c.aliases].join(" ").toLowerCase().includes(q)));
+    if (!cmds.length) continue;
+    out.push(el("h3", { class: "grp" }, g));
+    for (const c of cmds) {
+      const body = el("div", { class: "cmd-body" },
+        el("p", {}, c.details.replace(/\s+/g, " ")));
+      if (c.aliases.length) body.append(el("p", {}, el("small", {}, "aliases: "), ...c.aliases.flatMap((a, i) => [i ? ", " : "", el("code", {}, a)])));
+      body.append(el("div", { class: "row" }, el("small", {}, "examples:"),
+        ...c.examples.map((e) => el("button", { class: "ex", type: "button", title: "load into the console", onclick: () => useExample(e) }, p + e))));
+      out.push(el("details", { class: "cmd" },
+        el("summary", {}, el("code", {}, p + c.usage),
+          el("span", { class: "pill " + (roleClass[c.role] || "muted") }, roleText(c.role)),
+          el("span", { class: "muted" }, c.summary)),
+        body));
+    }
+  }
+  if (!out.length) out.push(el("div", { id: "commands-empty", class: "muted" }, "No commands match."));
+  $("commands").replaceChildren(...out);
+}
+async function loadCommands() {
+  cmdData = await api("/api/commands");
+  renderCommands();
+}
+$("cmd-filter").addEventListener("input", renderCommands);
+$("cmd-role").addEventListener("change", renderCommands);
+
 const refresh = () => Promise.all([loadStatus(), loadServices(), loadChannels()].map((p) => p.catch(console.warn)));
 refresh(); safe(loadUsers)(); safe(loadLogs)();
+loadCommands().catch((e) => { $("commands").replaceChildren(el("small", { class: "bad" }, "could not load commands: " + e.message)); });
 setInterval(refresh, 5000);
 setInterval(safe(loadLogs), 2000);
 </script>

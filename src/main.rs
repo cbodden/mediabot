@@ -28,11 +28,18 @@ struct Cli {
     /// Validate the config and exit.
     #[arg(long)]
     check: bool,
+    /// Print the command reference (Markdown, as in docs/COMMANDS.md) and exit. Needs no config.
+    #[arg(long)]
+    commands: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.commands {
+        print!("{}", commands::commands_markdown());
+        return Ok(());
+    }
     let config = config::Config::load(&cli.config)?;
     if cli.check {
         println!(
