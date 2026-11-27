@@ -4,6 +4,7 @@
 pub mod arr;
 pub mod media;
 pub mod seerr;
+pub mod tracearr;
 
 use std::{
     sync::Arc,
@@ -106,8 +107,9 @@ impl Service {
                 headers.insert(header::AUTHORIZATION, header::HeaderValue::from_str(&v)?);
             }
             ServiceKind::Tautulli => {} // query parameter
-            ServiceKind::Tofa => {
-                // Admin > Settings > API > API keys ("Read only" is enough).
+            ServiceKind::Tofa | ServiceKind::Tracearr => {
+                // Tofa: Admin > Settings > API > API keys ("Read only" is enough).
+                // Tracearr: Settings > API, a `trr_pub_...` key.
                 headers.insert(
                     header::AUTHORIZATION,
                     header::HeaderValue::from_str(&format!("Bearer {key}"))?,
@@ -275,6 +277,7 @@ impl Service {
             ServiceKind::Emby | ServiceKind::Jellyfin => {
                 self.get("/System/Info", &[]).await?["Version"].clone()
             }
+            ServiceKind::Tracearr => Value::String(self.tracearr_servers().await?.0),
             ServiceKind::Tofa => {
                 let v = self.get("/api/v1/system/info", &[]).await?;
                 // The schema is undocumented; take the most specific version field present.
@@ -367,6 +370,7 @@ mod tests {
     fn query_encoding_and_tautulli_key() {
         let m = Arc::new(Metrics::new());
         let cfg = ServiceConfig {
+            enabled: true,
             name: None,
             kind: ServiceKind::Tautulli,
             url: "http://t:8181/".into(),
@@ -475,6 +479,7 @@ mod tests {
 
     fn seerr_service(url: &str) -> Service {
         let cfg = ServiceConfig {
+            enabled: true,
             name: None,
             kind: ServiceKind::Seerr,
             url: url.into(),

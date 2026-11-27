@@ -35,6 +35,14 @@ data_dir = "data"
 poll_interval_secs = 30  # sessions / queues / request counts
 slow_poll_every = 20     # library counts & missing totals every 20 polls (10 min)
 cooldown_ms = 2000       # per-user rate limit for non-admins
+# Who answers `np` / `libs` when no service is named:
+#   "auto"     (default) Tracearr while an enabled Tracearr service is up; the direct servers
+#              (plex, emby, jellyfin, tofa, tautulli) then go on standby - not polled, not asked.
+#              If Tracearr is down they answer again.
+#   "tracearr" only Tracearr       "direct" only the direct servers       "all" everything
+media_source = "auto"
+# Time zone for Tracearr's "today" stats (default: $TZ, else UTC).
+# timezone = "America/New_York"
 
 [web]
 enabled = true
@@ -59,13 +67,22 @@ json_logs = false
 # tenant = "home"
 
 # ---------------------------------------------------------------------------------------
-# Services. `kind` is one of: plex, emby, jellyfin, tautulli, tofa, seerr, sonarr, radarr, lidarr.
+# Services. `kind` is one of: plex, emby, jellyfin, tautulli, tofa, tracearr, seerr, sonarr,
+# radarr, lidarr.
 # `name` defaults to the kind; set it when you have two of the same kind (e.g. sonarr4k).
 # Names double as IRC shorthand: "!sonarr4k queue", "!plex".
+# `enabled = false` switches a block off without deleting it; its ${VAR}s may then be unset.
 # ---------------------------------------------------------------------------------------
 
 [[service]]
+kind = "tracearr"                   # https://github.com/connorgallopo/Tracearr - one monitor for
+url = "http://tracearr:3000"        # Plex, Jellyfin, Emby and Tofa; with media_source = "auto" it
+api_key = "${TRACEARR_API_KEY}"     # answers np/libs for all of them. Settings > API (trr_pub_...)
+# enabled = false
+
+[[service]]
 kind = "plex"
+enabled = true                      # false = switched off, block kept
 url = "http://plex:32400"
 api_key = "${PLEX_TOKEN}"          # X-Plex-Token
 

@@ -9,6 +9,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Tracearr support (`kind = "tracearr"`, #5): one service for every Plex, Jellyfin, Emby and Tofa server Tracearr
+  monitors. `np` shows all of their streams (each labelled with its server), `libs` totals libraries per server,
+  and `status` lists each server as up or down
+- `[bot] media_source` (`auto` by default): while an enabled Tracearr is up, it answers `np` / `libs` and the
+  direct servers go on **standby** (not polled, `⏸ standby` in `status` and the panel); if it's down they answer
+  again, also mid-command. `tracearr`, `direct` and `all` pin the choice. Naming a service still asks that one
+- New commands, from Tracearr: `today` (plays, watch time and active users today), `top` (most-watched movies
+  and shows by plays, watch time or viewers over 1–365 days), `recent` (recently added, by type)
+- `enabled = false` on a `[[service]]` block switches it off without deleting it; its `${VAR}`s may then be unset
+- `[bot] timezone` for "today" (default `$TZ`, else UTC)
+- Metrics `mediabot_tracearr_server_up`, `mediabot_tracearr_server_streams`, `mediabot_tracearr_today`,
+  `mediabot_service_standby`; three Tracearr panels on the Grafana dashboard
+- Web panel: standby and disabled services, Tracearr's servers, and the media source in the Services card
+
+### Changed
+- `GET /api/services` returns `{media_source, services}` instead of a bare list; `GET /api/status` counts
+  standby services separately
+
 
 ## [0.2.0] - 2026-11-27
 
