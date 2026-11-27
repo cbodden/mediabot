@@ -15,6 +15,8 @@ pub struct Stream {
     pub transcode: bool,
     pub player: String,
     pub quality: Option<String>,
+    /// Which backend server, when the answer comes from Tracearr.
+    pub server: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -32,16 +34,23 @@ pub struct Library {
     pub count: Option<u64>,
     /// Episodes for shows, tracks for music, when known.
     pub children: Option<u64>,
+    /// Which backend server, when the answer comes from Tracearr.
+    pub server: Option<String>,
 }
 
-fn pct(pos: Option<f64>, dur: Option<f64>) -> Option<f64> {
+pub(crate) fn pct(pos: Option<f64>, dur: Option<f64>) -> Option<f64> {
     match (pos, dur) {
         (Some(p), Some(d)) if d > 0.0 => Some((p / d * 100.0).clamp(0.0, 100.0)),
         _ => None,
     }
 }
 
-fn episode_title(series: &str, season: Option<f64>, ep: Option<f64>, name: &str) -> String {
+pub(crate) fn episode_title(
+    series: &str,
+    season: Option<f64>,
+    ep: Option<f64>,
+    name: &str,
+) -> String {
     match (season, ep) {
         (Some(s), Some(e)) => format!("{series} S{:02}E{:02} - {name}", s as i64, e as i64),
         _ => format!("{series} - {name}"),
@@ -55,6 +64,7 @@ impl Service {
             ServiceKind::Emby | ServiceKind::Jellyfin => self.emby_activity().await,
             ServiceKind::Tautulli => self.tautulli_activity().await,
             ServiceKind::Tofa => self.tofa_activity().await,
+            ServiceKind::Tracearr => self.tracearr_activity().await,
             k => bail!("{} is not a media server", k.as_str()),
         }
     }
@@ -65,6 +75,7 @@ impl Service {
             ServiceKind::Emby | ServiceKind::Jellyfin => self.emby_libraries().await,
             ServiceKind::Tautulli => self.tautulli_libraries().await,
             ServiceKind::Tofa => self.tofa_libraries().await,
+            ServiceKind::Tracearr => self.tracearr_libraries().await,
             k => bail!("{} is not a media server", k.as_str()),
         }
     }
@@ -97,6 +108,7 @@ impl Service {
                     || s(&m["TranscodeSession"], "audioDecision") == "transcode");
             bw += n(&m["Session"], "bandwidth").unwrap_or(0.0);
             act.streams.push(Stream {
+                server: None,
                 user: s(&m["User"], "title"),
                 title,
                 paused: s(&m["Player"], "state") == "paused",
@@ -151,6 +163,7 @@ impl Service {
                 None => None,
             };
             out.push(Library {
+                server: None,
                 name: s(d, "title"),
                 kind,
                 count: Some(count),
@@ -203,6 +216,7 @@ impl Service {
                 .and_then(|a| a.iter().find(|st| s(st, "Type") == "Video"))
                 .and_then(|st| n(st, "Height"));
             act.streams.push(Stream {
+                server: None,
                 user: s(sess, "UserName"),
                 title,
                 paused: ps["IsPaused"].as_bool().unwrap_or(false),
@@ -232,6 +246,7 @@ impl Service {
             .filter_map(|(name, kind, key, child)| {
                 let count = n(&v, key)? as u64;
                 (count > 0).then(|| Library {
+                    server: None,
                     name: name.to_string(),
                     kind: kind.to_string(),
                     count: Some(count),
@@ -254,6 +269,7 @@ impl Service {
             .unwrap_or(&empty)
             .iter()
             .map(|x| Stream {
+                server: None,
                 user: first_nonempty(&[s(x, "friendly_name"), s(x, "user")]),
                 title: first_nonempty(&[s(x, "full_title"), s(x, "title")]),
                 paused: s(x, "state") == "paused",
@@ -285,6 +301,7 @@ impl Service {
             .map(|l| {
                 let kind = s(l, "section_type");
                 Library {
+                    server: None,
                     name: s(l, "section_name"),
                     children: match kind.as_str() {
                         "show" | "artist" => n(l, "child_count").map(|x| x as u64),
@@ -329,6 +346,7 @@ impl Service {
                     )
                 });
                 Stream {
+                    server: None,
                     user: first_nonempty(&[s(x, "username"), s(x, "profile_name"), s(x, "user")]),
                     title: first_nonempty(&[s(x, "media_title"), s(x, "title")]),
                     paused: x["is_paused"].as_bool().unwrap_or(false),
@@ -358,6 +376,7 @@ impl Service {
         Ok(list_of(&v, &["libraries", "items", "data", "results"])
             .iter()
             .map(|l| Library {
+                server: None,
                 name: first_nonempty(&[s(l, "name"), s(l, "title"), s(l, "id")]),
                 kind: first_nonempty(&[s(l, "type"), s(l, "kind"), s(l, "media_type")])
                     .to_ascii_lowercase(),
@@ -385,7 +404,7 @@ fn list_of<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Vec<&'a serde_json::V
         .unwrap_or_default()
 }
 
-fn first_nonempty(opts: &[String]) -> String {
+pub(crate) fn first_nonempty(opts: &[String]) -> String {
     opts.iter()
         .find(|s| !s.is_empty())
         .cloned()

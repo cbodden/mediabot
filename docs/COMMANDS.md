@@ -36,8 +36,16 @@ Every command the bot understands (examples use the default nick `mediabot`). Th
 
 | Command | Role | Does |
 |---|---|---|
-| [`np`](#cmd-np) | readonly | what's playing on plex/emby/jellyfin/tofa/tautulli |
+| [`np`](#cmd-np) | readonly | what's playing (Tracearr, or plex/emby/jellyfin/tofa/tautulli) |
 | [`libs`](#cmd-libs) | readonly | library item counts |
+
+**Stats**
+
+| Command | Role | Does |
+|---|---|---|
+| [`today`](#cmd-today) | readonly | today's plays, watch time and active users (Tracearr) |
+| [`top`](#cmd-top) | readonly | most-watched movies and shows (Tracearr) |
+| [`recent`](#cmd-recent) | readonly | recently added to the libraries (Tracearr) |
 
 **Requests**
 
@@ -118,7 +126,7 @@ Examples:
 - **Role:** readonly
 - **Aliases:** `services`
 
-Bot version, uptime, server, nick and channels, then every service from the last poll: ✓ with its version, or ✗ with the error.
+Bot version, uptime, server, nick and channels, then every service from the last poll: ✓ with its version, ✗ with the error, or ⏸ standby for a media server Tracearr is answering for. Tracearr also lists each media server it monitors as up or down. Services switched off with enabled = false are listed last.
 
 Examples:
 
@@ -139,7 +147,7 @@ Examples:
 - **Role:** readonly
 - **Aliases:** `streams`, `playing`, `nowplaying`
 
-For each media server: stream count, how many transcode, total bandwidth, then one line per stream with user, title, quality, transcode or direct, progress and device. Servers with nothing playing are listed together at the end.
+Stream count, how many transcode, total bandwidth, then one line per stream with user, title, quality, transcode or direct, progress and device. With Tracearr configured (media_source = auto) it answers for every server at once and each stream says which server it's on; if Tracearr is down the servers are asked directly. Naming a service always asks that one. Servers with nothing playing are listed together at the end.
 
 Examples:
 
@@ -147,6 +155,7 @@ Examples:
 !np
 !np plex
 !plex
+!tracearr
 ```
 
 <a id="cmd-libs"></a>
@@ -160,13 +169,76 @@ Examples:
 - **Role:** readonly
 - **Aliases:** `libraries`, `library`
 
-Items per library for each media server, with episode or track totals for shows and music where the server reports them. An unknown count shows as ?.
+Items per library for each media server, with episode or track totals for shows and music where the server reports them. An unknown count shows as ?. Through Tracearr, counts are totalled per server: movies, shows (episodes), tracks.
 
 Examples:
 
 ```
 !libs
 !libs jellyfin
+```
+
+## Stats
+
+<a id="cmd-today"></a>
+
+### today
+
+```
+!today
+```
+
+- **Role:** readonly
+
+From Tracearr, across all its servers: plays and sessions so far today, hours watched, active users, streams playing now, and any sharing alerts in the last 24 hours. "Today" uses [bot] timezone, else $TZ, else UTC.
+
+Examples:
+
+```
+!today
+!tracearr today
+```
+
+<a id="cmd-top"></a>
+
+### top
+
+```
+!top [movies|shows] [days] [plays|time|viewers]
+```
+
+- **Role:** readonly
+- **Aliases:** `popular`
+
+Without a type: the top 3 movies and top 3 shows; with one, the top 5. Over the last 7 days unless you give a number (1 to 365), ranked by plays unless you say time (hours watched) or viewers (different users). Each line shows plays, hours and viewers.
+
+Examples:
+
+```
+!top
+!top shows 30
+!top movies 7 viewers
+```
+
+<a id="cmd-recent"></a>
+
+### recent
+
+```
+!recent [movies|shows|episodes|music|artists|tracks] [count]
+```
+
+- **Role:** readonly
+- **Aliases:** `new`, `added`
+
+The newest additions across every server Tracearr monitors, newest first: date and time (UTC), title, year, type and server. 6 by default, up to 15. Items since removed are left out.
+
+Examples:
+
+```
+!recent
+!recent movies
+!recent episodes 10
 ```
 
 ## Requests

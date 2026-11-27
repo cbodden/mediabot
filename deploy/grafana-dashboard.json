@@ -545,6 +545,109 @@
       "id": 16
     },
     {
+      "type": "stat",
+      "title": "Plays today (Tracearr)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(mediabot_tracearr_today{stat=\"plays\"})",
+          "legendFormat": "plays"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(mediabot_tracearr_today{stat=\"watch_hours\"})",
+          "legendFormat": "hours"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 17
+    },
+    {
+      "type": "timeseries",
+      "title": "Streams per server (Tracearr)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 44,
+        "w": 10,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "mediabot_tracearr_server_streams",
+          "legendFormat": "{{server}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 18
+    },
+    {
+      "type": "table",
+      "title": "Media servers (Tracearr)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 44,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "mediabot_tracearr_server_up",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 19
+    },
+    {
       "type": "logs",
       "title": "Audit log (admin actions)",
       "datasource": {
@@ -553,7 +656,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 44,
+        "y": 52,
         "w": 24,
         "h": 10
       },
@@ -572,7 +675,7 @@
         "overrides": []
       },
       "options": {},
-      "id": 17
+      "id": 20
     },
     {
       "type": "logs",
@@ -583,7 +686,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 62,
         "w": 24,
         "h": 10
       },
@@ -602,7 +705,7 @@
         "overrides": []
       },
       "options": {},
-      "id": 18
+      "id": 21
     }
   ]
 }

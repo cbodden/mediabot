@@ -43,9 +43,11 @@ async fn main() -> Result<()> {
     let config = config::Config::load(&cli.config)?;
     if cli.check {
         println!(
-            "config OK: {} service(s), {} channel(s), web panel {}",
-            config.services.len(),
+            "config OK: {} service(s) ({} disabled), {} channel(s), media source {:?}, web panel {}",
+            config.enabled_services().count(),
+            config.services.len() - config.enabled_services().count(),
             config.irc.channels.len(),
+            config.bot.media_source,
             if config.web.enabled {
                 "enabled"
             } else {
@@ -68,8 +70,7 @@ async fn main() -> Result<()> {
 
     let metrics = Arc::new(metrics::Metrics::new());
     let services = config
-        .services
-        .iter()
+        .enabled_services()
         .map(|s| services::Service::new(s, metrics.clone()).map(Arc::new))
         .collect::<Result<Vec<_>>>()
         .context("building service clients")?;
@@ -90,10 +91,23 @@ async fn main() -> Result<()> {
         started: chrono::Utc::now(),
     });
     app.refresh_user_metrics().await;
+    let disabled: Vec<String> = app
+        .config
+        .services
+        .iter()
+        .filter(|s| !s.enabled)
+        .map(|s| s.name())
+        .collect();
     info!(
-        "mediabot {} starting: {} service(s), owners: {}",
+        "mediabot {} starting: {} service(s){}, media source {:?}, owners: {}",
         env!("CARGO_PKG_VERSION"),
         app.services.len(),
+        if disabled.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} disabled: {})", disabled.len(), disabled.join(", "))
+        },
+        app.config.bot.media_source,
         app.store.owners().join(", ")
     );
 

@@ -32,6 +32,11 @@ pub struct Metrics {
     pub arr_items: IntGaugeVec,
     pub arr_missing: IntGaugeVec,
     pub arr_health: IntGaugeVec,
+    // tracearr / standby
+    pub tracearr_server_up: IntGaugeVec,
+    pub tracearr_server_streams: IntGaugeVec,
+    pub tracearr_today: GaugeVec,
+    pub service_standby: IntGaugeVec,
 }
 
 macro_rules! reg {
@@ -173,6 +178,46 @@ impl Metrics {
                 IntGaugeVec::new(
                     o("arr_health_issues", "Health check issues"),
                     &["service", "kind", "type"]
+                )
+            ),
+            tracearr_server_up: reg!(
+                r,
+                IntGaugeVec::new(
+                    o(
+                        "tracearr_server_up",
+                        "1 if Tracearr reports the media server up"
+                    ),
+                    &["service", "server", "type"]
+                )
+            ),
+            tracearr_server_streams: reg!(
+                r,
+                IntGaugeVec::new(
+                    o(
+                        "tracearr_server_streams",
+                        "Active streams per media server, from Tracearr"
+                    ),
+                    &["service", "server"]
+                )
+            ),
+            tracearr_today: reg!(
+                r,
+                GaugeVec::new(
+                    o(
+                        "tracearr_today",
+                        "Tracearr's stats for today (plays, sessions, watch_hours, active_users, alerts)"
+                    ),
+                    &["service", "stat"]
+                )
+            ),
+            service_standby: reg!(
+                r,
+                IntGaugeVec::new(
+                    o(
+                        "service_standby",
+                        "1 while a direct media server is on standby because Tracearr answers"
+                    ),
+                    &["service", "kind"]
                 )
             ),
             registry: r,

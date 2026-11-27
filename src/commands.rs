@@ -46,7 +46,14 @@ pub struct Spec {
     pub examples: &'static [&'static str],
 }
 
-pub const GROUPS: &[&str] = &["General", "Media servers", "Requests", "Downloads", "Admin"];
+pub const GROUPS: &[&str] = &[
+    "General",
+    "Media servers",
+    "Stats",
+    "Requests",
+    "Downloads",
+    "Admin",
+];
 
 pub const COMMANDS: &[Spec] = &[
     Spec {
@@ -79,7 +86,9 @@ pub const COMMANDS: &[Spec] = &[
         usage: "status",
         summary: "backend health and versions",
         details: "Bot version, uptime, server, nick and channels, then every service from the last poll: \
-                  ✓ with its version, or ✗ with the error.",
+                  ✓ with its version, ✗ with the error, or ⏸ standby for a media server Tracearr is \
+                  answering for. Tracearr also lists each media server it monitors as up or down. \
+                  Services switched off with enabled = false are listed last.",
         examples: &["status"],
     },
     Spec {
@@ -88,11 +97,13 @@ pub const COMMANDS: &[Spec] = &[
         role: Role::ReadOnly,
         group: "Media servers",
         usage: "np [service]",
-        summary: "what's playing on plex/emby/jellyfin/tofa/tautulli",
-        details: "For each media server: stream count, how many transcode, total bandwidth, then one line \
-                  per stream with user, title, quality, transcode or direct, progress and device. Servers \
-                  with nothing playing are listed together at the end.",
-        examples: &["np", "np plex", "plex"],
+        summary: "what's playing (Tracearr, or plex/emby/jellyfin/tofa/tautulli)",
+        details: "Stream count, how many transcode, total bandwidth, then one line per stream with user, \
+                  title, quality, transcode or direct, progress and device. With Tracearr configured \
+                  (media_source = auto) it answers for every server at once and each stream says which \
+                  server it's on; if Tracearr is down the servers are asked directly. Naming a service \
+                  always asks that one. Servers with nothing playing are listed together at the end.",
+        examples: &["np", "np plex", "plex", "tracearr"],
     },
     Spec {
         name: "libs",
@@ -102,8 +113,45 @@ pub const COMMANDS: &[Spec] = &[
         usage: "libs [service]",
         summary: "library item counts",
         details: "Items per library for each media server, with episode or track totals for shows and \
-                  music where the server reports them. An unknown count shows as ?.",
+                  music where the server reports them. An unknown count shows as ?. Through Tracearr, \
+                  counts are totalled per server: movies, shows (episodes), tracks.",
         examples: &["libs", "libs jellyfin"],
+    },
+    Spec {
+        name: "today",
+        aliases: &[],
+        role: Role::ReadOnly,
+        group: "Stats",
+        usage: "today",
+        summary: "today's plays, watch time and active users (Tracearr)",
+        details: "From Tracearr, across all its servers: plays and sessions so far today, hours watched, \
+                  active users, streams playing now, and any sharing alerts in the last 24 hours. \
+                  \"Today\" uses [bot] timezone, else $TZ, else UTC.",
+        examples: &["today", "tracearr today"],
+    },
+    Spec {
+        name: "top",
+        aliases: &["popular"],
+        role: Role::ReadOnly,
+        group: "Stats",
+        usage: "top [movies|shows] [days] [plays|time|viewers]",
+        summary: "most-watched movies and shows (Tracearr)",
+        details: "Without a type: the top 3 movies and top 3 shows; with one, the top 5. Over the last 7 \
+                  days unless you give a number (1 to 365), ranked by plays unless you say time (hours \
+                  watched) or viewers (different users). Each line shows plays, hours and viewers.",
+        examples: &["top", "top shows 30", "top movies 7 viewers"],
+    },
+    Spec {
+        name: "recent",
+        aliases: &["new", "added"],
+        role: Role::ReadOnly,
+        group: "Stats",
+        usage: "recent [movies|shows|episodes|music|artists|tracks] [count]",
+        summary: "recently added to the libraries (Tracearr)",
+        details: "The newest additions across every server Tracearr monitors, newest first: date and time \
+                  (UTC), title, year, type and server. 6 by default, up to 15. Items since removed are \
+                  left out.",
+        examples: &["recent", "recent movies", "recent episodes 10"],
     },
     Spec {
         name: "search",
@@ -535,6 +583,9 @@ async fn dispatch(app: &Arc<App>, ctx: &Ctx, spec: &Spec, args: &[&str]) -> Resu
         "status" => status(app).await,
         "np" => now_playing(app, args.first().copied()).await,
         "libs" => libraries(app, args.first().copied()).await,
+        "today" => today(app, args).await,
+        "top" => top(app, args).await,
+        "recent" => recent(app, args).await,
         "search" => search(app, args).await,
         "requests" => requests(app, args.first().copied()).await,
         "request" => request(app, ctx, args).await,
@@ -645,10 +696,26 @@ async fn status(app: &App) -> Result<Vec<String>> {
         .iter()
         .filter_map(|s| st.get(&s.name))
         .map(|s| {
-            if s.last_poll.is_none() {
+            if s.standby {
+                format!("{} ⏸ standby", s.name)
+            } else if s.last_poll.is_none() {
                 format!("{} …", s.name)
             } else if s.up {
-                format!("{} ✓ {}", s.name, s.version.as_deref().unwrap_or(""))
+                let backends = if s.backends.is_empty() {
+                    String::new()
+                } else {
+                    let b: Vec<String> = s
+                        .backends
+                        .iter()
+                        .map(|b| format!("{} {}", b.name, if b.up { "✓" } else { "✗" }))
+                        .collect();
+                    format!(" ({})", b.join(", "))
+                };
+                format!(
+                    "{} ✓ {}{backends}",
+                    s.name,
+                    s.version.as_deref().unwrap_or("")
+                )
             } else {
                 format!(
                     "{} ✗ ({})",
@@ -666,14 +733,53 @@ async fn status(app: &App) -> Result<Vec<String>> {
     for chunk in parts.chunks(5) {
         lines.push(chunk.join(" | "));
     }
+    let disabled: Vec<String> = app
+        .config
+        .services
+        .iter()
+        .filter(|s| !s.enabled)
+        .map(|s| s.name())
+        .collect();
+    if !disabled.is_empty() {
+        lines.push(format!("disabled: {}", disabled.join(", ")));
+    }
     Ok(lines)
 }
 
+/// Run `f` on the primary media services; if every one fails and there's a fallback (the direct
+/// servers while Tracearr is preferred), run it on the fallback and say so.
+async fn media_each<T, F, Fut>(
+    app: &App,
+    which: Option<&str>,
+    f: F,
+) -> Result<(Vec<(Arc<Service>, Result<T>)>, Option<String>)>
+where
+    T: Send + 'static,
+    F: Fn(Arc<Service>) -> Fut + Clone,
+    Fut: Future<Output = Result<T>> + Send + 'static,
+{
+    let (primary, fallback) = app.media_targets(which).await?;
+    let results = each(primary, f.clone()).await;
+    if fallback.is_empty() || results.iter().any(|(_, r)| r.is_ok()) {
+        return Ok((results, None));
+    }
+    let why = results
+        .iter()
+        .filter_map(|(s, r)| r.as_ref().err().map(|e| format!("{}: {e:#}", s.name)))
+        .next()
+        .unwrap_or_default();
+    let note = format!(
+        "Tracearr unavailable ({}) - asking the servers directly",
+        why.chars().take(80).collect::<String>()
+    );
+    Ok((each(fallback, f).await, Some(note)))
+}
+
 async fn now_playing(app: &App, which: Option<&str>) -> Result<Vec<String>> {
-    let svcs = app.select(ServiceKind::is_media_server, which, "media server")?;
-    let mut lines = vec![];
+    let (results, note) = media_each(app, which, |s| async move { s.activity().await }).await?;
+    let mut lines: Vec<String> = note.into_iter().collect();
     let mut idle = vec![];
-    for (svc, res) in each(svcs, |s| async move { s.activity().await }).await {
+    for (svc, res) in results {
         match res {
             Err(e) => lines.push(format!("{}: error: {e:#}", svc.name)),
             Ok(a) if a.streams.is_empty() => idle.push(svc.name.clone()),
@@ -693,8 +799,9 @@ async fn now_playing(app: &App, which: Option<&str>) -> Result<Vec<String>> {
                     let q = s.quality.map(|q| format!("{q}, ")).unwrap_or_default();
                     let mode = if s.transcode { "transcode" } else { "direct" };
                     let state = if s.paused { "⏸" } else { "▶" };
+                    let server = s.server.map(|v| format!(" · {v}")).unwrap_or_default();
                     lines.push(format!(
-                        "  {state} {} — {} [{q}{mode}]{} on {}",
+                        "  {state} {} — {} [{q}{mode}]{} on {}{server}",
                         s.user,
                         s.title,
                         pct(s.progress),
@@ -710,12 +817,58 @@ async fn now_playing(app: &App, which: Option<&str>) -> Result<Vec<String>> {
     Ok(lines)
 }
 
+/// 179644 -> "179,644"
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 async fn libraries(app: &App, which: Option<&str>) -> Result<Vec<String>> {
-    let svcs = app.select(ServiceKind::is_media_server, which, "media server")?;
-    let mut lines = vec![];
-    for (svc, res) in each(svcs, |s| async move { s.libraries().await }).await {
+    let (results, note) = media_each(app, which, |s| async move { s.libraries().await }).await?;
+    let mut lines: Vec<String> = note.into_iter().collect();
+    for (svc, res) in results {
         match res {
             Err(e) => lines.push(format!("{}: error: {e:#}", svc.name)),
+            // Tracearr: per-server totals by type
+            Ok(libs) if libs.iter().any(|l| l.server.is_some()) => {
+                let mut servers: Vec<&str> = vec![];
+                for l in &libs {
+                    let s = l.server.as_deref().unwrap_or("?");
+                    if !servers.contains(&s) {
+                        servers.push(s);
+                    }
+                }
+                for srv in servers {
+                    let parts: Vec<String> = libs
+                        .iter()
+                        .filter(|l| l.server.as_deref() == Some(srv))
+                        .map(|l| {
+                            let c = l.count.map_or("?".into(), thousands);
+                            match l.kind.as_str() {
+                                "movie" => format!("{c} movies"),
+                                "show" => match l.children {
+                                    Some(e) => format!("{c} shows ({} eps)", thousands(e)),
+                                    None => format!("{c} shows"),
+                                },
+                                "track" => format!("{c} tracks"),
+                                _ => format!("{c} other"),
+                            }
+                        })
+                        .collect();
+                    lines.push(format!(
+                        "{B}{srv}{B} (via {}): {}",
+                        svc.name,
+                        parts.join(" · ")
+                    ));
+                }
+            }
             Ok(libs) => {
                 let parts: Vec<String> = libs
                     .iter()
@@ -733,6 +886,152 @@ async fn libraries(app: &App, which: Option<&str>) -> Result<Vec<String>> {
                     })
                     .collect();
                 lines.push(format!("{B}{}{B}: {}", svc.name, parts.join(" · ")));
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// Tracearr services, narrowed by any argument that is a service name; returns the other args.
+fn tracearr_args<'a>(app: &App, args: &[&'a str]) -> Result<(Vec<Arc<Service>>, Vec<&'a str>)> {
+    let mut which = None;
+    let mut rest = vec![];
+    for a in args {
+        if which.is_none() && app.is_service_word(a) {
+            which = Some(*a);
+        } else {
+            rest.push(*a);
+        }
+    }
+    let svcs = app.select(|k| k == ServiceKind::Tracearr, which, "tracearr")?;
+    Ok((svcs, rest))
+}
+
+async fn today(app: &App, args: &[&str]) -> Result<Vec<String>> {
+    let (svcs, _) = tracearr_args(app, args)?;
+    let tz = app.config.timezone();
+    let mut lines = vec![];
+    for (svc, res) in each(svcs, move |s| {
+        let tz = tz.clone();
+        async move { s.tracearr_today(&tz).await }
+    })
+    .await
+    {
+        match res {
+            Err(e) => lines.push(format!("{}: error: {e:#}", svc.name)),
+            Ok(t) => lines.push(format!(
+                "{B}{}{B} today: {} plays ({} sessions), {:.1} h watched, {} active user(s), {} playing now{}",
+                svc.name,
+                t.plays,
+                t.sessions,
+                t.watch_hours,
+                t.active_users,
+                t.active_streams,
+                if t.alerts > 0 { format!(", {} alert(s) in 24 h", t.alerts) } else { String::new() }
+            )),
+        }
+    }
+    Ok(lines)
+}
+
+async fn top(app: &App, args: &[&str]) -> Result<Vec<String>> {
+    let (svcs, rest) = tracearr_args(app, args)?;
+    let (mut kinds, mut days, mut sort) = (vec![], 7u32, "plays");
+    for a in rest {
+        match a.to_ascii_lowercase().as_str() {
+            "movie" | "movies" | "films" | "film" => kinds.push("movie"),
+            "show" | "shows" | "tv" | "series" => kinds.push("show"),
+            "plays" | "play" => sort = "plays",
+            "time" | "watch" | "watchtime" | "hours" => sort = "watch_time",
+            "viewers" | "users" | "people" => sort = "viewers",
+            other => match other.trim_end_matches('d').parse::<u32>() {
+                Ok(d) => days = d.clamp(1, 365),
+                Err(_) => bail!(
+                    "unknown argument {other:?} (movies, shows, a number of days, plays, time or viewers)"
+                ),
+            },
+        }
+    }
+    let limit = if kinds.is_empty() { 3 } else { 5 };
+    if kinds.is_empty() {
+        kinds = vec!["movie", "show"];
+    }
+    let by = match sort {
+        "watch_time" => "watch time",
+        s => s,
+    };
+    let mut lines = vec![];
+    for svc in svcs {
+        for kind in &kinds {
+            let label = if *kind == "movie" { "movies" } else { "shows" };
+            match svc.tracearr_top(kind, days, sort, limit).await {
+                Err(e) => lines.push(format!("{}: error: {e:#}", svc.name)),
+                Ok(items) if items.is_empty() => {
+                    lines.push(format!("no {label} watched in the last {days} days"))
+                }
+                Ok(items) => {
+                    lines.push(format!("{B}Top {label}{B}, last {days} days by {by}:"));
+                    for (i, t) in items.iter().enumerate() {
+                        let y = t.year.map(|y| format!(" ({y})")).unwrap_or_default();
+                        lines.push(format!(
+                            "  {}. {}{y} — {} play(s), {:.1} h, {} viewer(s)",
+                            i + 1,
+                            t.title,
+                            t.plays,
+                            t.watch_hours,
+                            t.viewers
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(lines)
+}
+
+async fn recent(app: &App, args: &[&str]) -> Result<Vec<String>> {
+    let (svcs, rest) = tracearr_args(app, args)?;
+    let (mut kind, mut count) = (None, 6usize);
+    for a in rest {
+        kind = Some(match a.to_ascii_lowercase().as_str() {
+            "movie" | "movies" | "films" => "movie",
+            "show" | "shows" | "series" => "show",
+            "episode" | "episodes" | "eps" | "tv" => "episode",
+            "music" | "album" | "albums" => "album",
+            "artist" | "artists" => "artist",
+            "track" | "tracks" | "songs" => "track",
+            other => match other.parse::<usize>() {
+                Ok(n) => {
+                    count = n.clamp(1, 15);
+                    continue;
+                }
+                Err(_) => bail!(
+                    "unknown argument {other:?} (movies, shows, episodes, music, artists, tracks, or a count)"
+                ),
+            },
+        });
+    }
+    let mut lines = vec![];
+    for svc in svcs {
+        match svc.tracearr_recent(kind, count).await {
+            Err(e) => lines.push(format!("{}: error: {e:#}", svc.name)),
+            Ok(items) if items.is_empty() => {
+                lines.push(format!("{}: nothing added recently", svc.name))
+            }
+            Ok(items) => {
+                lines.push(format!(
+                    "{B}Recently added{B}{}:",
+                    kind.map(|k| format!(" ({k}s)")).unwrap_or_default()
+                ));
+                for r in items {
+                    let y = r.year.map(|y| format!(" ({y})")).unwrap_or_default();
+                    let t = if kind.is_some() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", r.media_type)
+                    };
+                    lines.push(format!("  {}  {}{y}{t} · {}", r.added, r.title, r.server));
+                }
             }
         }
     }
@@ -1120,7 +1419,7 @@ mod tests {
 
     #[test]
     fn command_table_is_consistent() {
-        let media = ["plex", "emby", "jellyfin", "tautulli", "tofa"];
+        let media = ["plex", "emby", "jellyfin", "tautulli", "tofa", "tracearr"];
         let arrs = ["sonarr", "radarr", "lidarr"];
         for c in COMMANDS {
             assert!(

@@ -92,7 +92,7 @@ button.ex { background: var(--code); color: var(--text); border-color: var(--lin
   </section>
 
   <section class="wide">
-    <h2>Services</h2>
+    <h2>Services <small id="media-source"></small></h2>
     <div class="scroll"><table>
       <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Version</th><th>Summary</th><th>Polled</th><th></th></tr></thead>
       <tbody id="services"></tbody>
@@ -203,21 +203,42 @@ async function loadStatus() {
     ["Server", i.server || "-"], ["Nick", i.nick || "-"], ["Account", i.account || "(not identified)"],
     ["Channels", [...(i.channels || [])].join(" ") || "-"], ["Connected for", dur(i.connected_since)],
     ["Capabilities", (i.caps || []).join(" ") || "-"], ["Bot uptime", dur(s.started)],
-    ["Command prefix", s.prefix], ["Services up", `${s.services.up} / ${s.services.total}`],
+    ["Command prefix", s.prefix], ["Services up", `${s.services.up} / ${s.services.total - (s.services.standby || 0)}` + (s.services.standby ? ` (+${s.services.standby} on standby)` : "")],
   ];
   if (i.last_error) kv.push(["Last error", i.last_error]);
   $("irc").replaceChildren(...kv.flatMap(([k, v]) => [el("div", {}, k), el("div", {}, v)]));
 }
+function serviceState(s) {
+  if (!s.enabled) return el("span", { class: "pill muted", title: "enabled = false in config.toml" }, "disabled");
+  if (s.standby) return el("span", { class: "pill warn", title: "Tracearr answers for this server (media_source)" }, "standby");
+  if (!s.last_poll) return el("span", { class: "pill muted" }, "pending");
+  return el("span", { class: "pill " + (s.up ? "ok" : "bad"), title: s.error || "" }, s.up ? "up" : "down");
+}
+function serviceSummary(s) {
+  if (!s.enabled) return el("span", { class: "muted" }, "switched off in the config");
+  if (!s.up && !s.standby) return el("span", { class: "bad" }, s.error || "");
+  const parts = [(s.summary || []).join(" · ")];
+  if (s.backends && s.backends.length) {
+    const b = el("div", {});
+    for (const x of s.backends) {
+      b.append(el("span", { class: "pill " + (x.up ? "ok" : "bad"), title: `${x.kind} ${x.version || ""}` },
+        `${x.name} ${x.up ? "up" : x.status}`), " ");
+    }
+    parts.push(b);
+  }
+  return el("div", {}, ...parts);
+}
 async function loadServices() {
-  const list = await api("/api/services");
+  const res = await api("/api/services");
+  const list = res.services || [];
+  $("media-source").textContent = res.media_source ? "media source: " + res.media_source : "";
   replace("services", list.length ? list.map((s) => el("tr", {},
     el("td", {}, el("b", {}, s.name)), el("td", {}, s.kind),
-    el("td", {}, !s.last_poll ? el("span", { class: "pill muted" }, "pending")
-      : el("span", { class: "pill " + (s.up ? "ok" : "bad"), title: s.error || "" }, s.up ? "up" : "down")),
+    el("td", {}, serviceState(s)),
     el("td", {}, s.version || "-"),
-    el("td", {}, s.up ? (s.summary || []).join(" · ") : el("span", { class: "bad" }, s.error || "")),
-    el("td", { class: "muted" }, ago(s.last_poll) + (s.latency_ms != null ? ` (${s.latency_ms} ms)` : "")),
-    el("td", {}, el("button", { class: "ghost", onclick: async (e) => {
+    el("td", {}, serviceSummary(s)),
+    el("td", { class: "muted" }, s.enabled ? ago(s.last_poll) + (s.latency_ms != null ? ` (${s.latency_ms} ms)` : "") : "-"),
+    el("td", {}, !s.enabled ? "" : el("button", { class: "ghost", onclick: async (e) => {
       e.target.disabled = true;
       try { const r = await api(`/api/services/${encodeURIComponent(s.name)}/test`, "POST");
             toast(`${s.name}: OK, version ${r.version} (${r.latency_ms} ms)`); }

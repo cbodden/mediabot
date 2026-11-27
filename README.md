@@ -22,7 +22,8 @@ self-hosted media stack and lets trusted people act on it.
 
 | Area | Services | What you get |
 |---|---|---|
-| Media servers | Plex, Emby, Jellyfin, [Tofa](https://tofa.tv), Tautulli | who's watching what, transcodes, bandwidth, library counts |
+| Media servers | Plex, Emby, Jellyfin, [Tofa](https://tofa.tv), Tautulli — or all of them at once through [Tracearr](https://github.com/connorgallopo/Tracearr) | who's watching what, transcodes, bandwidth, library counts |
+| Stats | Tracearr | plays and watch time today, most-watched movies and shows, recently added |
 | Requests | Seerr (also Overseerr, Jellyseerr) | search, list, request, approve / decline |
 | Downloads | Sonarr, Radarr, Lidarr | queue, upcoming releases, missing items, library lookup, health |
 | Access | — | owners → admins → read-only users, tied to NickServ accounts |
@@ -74,6 +75,7 @@ You only need the services you run.
 | Jellyfin | `jellyfin` | `http://host:8096` | Dashboard → API Keys → **+** |
 | Emby | `emby` | `http://host:8096` | Settings → Advanced → API Keys → **New API Key** |
 | Tofa | `tofa` | `http://host:33333` | Admin → Settings → API → API keys ("Read only" is enough) |
+| Tracearr | `tracearr` | `http://host:3000` | Settings → API (a `trr_pub_…` key) |
 | Tautulli | `tautulli` | `http://host:8181` | Settings → Web Interface → API (enable, then copy) |
 | Seerr / Overseerr / Jellyseerr | `seerr` | `http://host:5055` | Settings → General → API Key |
 | Sonarr / Radarr / Lidarr | `sonarr` / `radarr` / `lidarr` | `:8989` / `:7878` / `:8686` | Settings → General → Security → API Key |
@@ -186,7 +188,8 @@ The full reference — every command with usage, required role, aliases, limits 
 | Area | Commands |
 |---|---|
 | General | `help`, `whoami`, `status` |
-| Media servers (Plex, Emby, Jellyfin, Tofa, Tautulli) | `np`, `libs` |
+| Media servers (Tracearr, or Plex, Emby, Jellyfin, Tofa, Tautulli) | `np`, `libs` |
+| Stats (Tracearr) | `today`, `top`, `recent` |
 | Requests (Seerr) | `search`, `requests`, and for admins `request`, `approve`, `decline` |
 | Downloads (Sonarr, Radarr, Lidarr) | `queue`, `upcoming`, `missing`, `lookup`, `health` |
 | Admin | `users` (admins), `join`, `part` (owners) |
@@ -220,7 +223,7 @@ headers to them.
 | `GET /healthz` | liveness, no auth |
 | `GET /metrics` | Prometheus, no auth unless `metrics_auth = true` |
 | `GET /api/status` | version, start time, IRC state, services up / total |
-| `GET /api/services` | per-service status |
+| `GET /api/services` | `{media_source, services: [...]}`: per-service status, including `standby`, Tracearr's `backends`, and `enabled = false` services |
 | `POST /api/services/{name}/test` | check a service now, returns version and latency |
 | `GET /api/users` · `POST /api/users` `{"id","role"}` · `DELETE /api/users/{id}` | access list |
 | `GET /api/channels` · `POST /api/channels` `{"name","key"?,"default_role"}` · `POST /api/channels/part` `{"name"}` | channels |
@@ -242,7 +245,8 @@ curl -u admin:$PW -H 'X-Mediabot: 1' -H 'Content-Type: application/json' \
 ### Prometheus
 
 The bot polls every service every `poll_interval_secs` (default 30). Library counts and missing totals are
-slower to fetch, so they're polled every `slow_poll_every` polls (default 20, about 10 minutes). Add
+slower to fetch, so they're polled every `slow_poll_every` polls (default 20, about 10 minutes). Media
+servers on standby (see [Tracearr](#tracearr-and-media_source)) aren't polled, and their series are removed. Add
 [`deploy/prometheus-scrape.yml`](deploy/prometheus-scrape.yml) to your scrape configs.
 
 All series are prefixed `mediabot_`:
@@ -265,12 +269,16 @@ All series are prefixed `mediabot_`:
 | `seerr_requests` | `service`, `status` | Seerr's request counts (`pending`, `approved`, `processing`, `available`, `declined`, `movie`, `tv`, `total`) |
 | `arr_queue` · `arr_items` · `arr_missing` | `service`, `kind` | queue size, items managed, monitored-but-missing |
 | `arr_health_issues` | `service`, `kind`, `type` | health check issues by level |
+| `tracearr_server_up` | `service`, `server`, `type` | 1 if Tracearr reports that media server up |
+| `tracearr_server_streams` | `service`, `server` | active streams per media server, from Tracearr |
+| `tracearr_today` | `service`, `stat` | today's `plays`, `sessions`, `watch_hours`, `active_users`, `alerts` |
+| `service_standby` | `service`, `kind` | 1 while Tracearr answers for that media server |
 | `build_info` · `start_time_seconds` | `version` | build and start time |
 
 ### Grafana
 
 Import [`deploy/grafana-dashboard.json`](deploy/grafana-dashboard.json) (Dashboards → New → Import). It asks
-for a Prometheus and a Loki data source. It has 18 panels: overview stats, streams, bandwidth, queues,
+for a Prometheus and a Loki data source. It has 21 panels: overview stats, streams, bandwidth, queues,
 missing, health, Seerr, libraries, backend latency and errors, commands, and the audit and warning logs.
 
 ### Loki
@@ -318,6 +326,8 @@ Every key below except `irc.nick` (and `web.password` while the panel is on) is 
 | `poll_interval_secs` | `30` | metrics poll interval (minimum 5) |
 | `slow_poll_every` | `20` | library and missing totals every N polls |
 | `cooldown_ms` | `2000` | per-user command interval for non-admins |
+| `media_source` | `"auto"` | who answers `np` / `libs`: `auto`, `tracearr`, `direct` or `all` (see [Tracearr](#tracearr-and-media_source)) |
+| `timezone` | `$TZ`, else UTC | IANA zone for Tracearr's "today" (`America/New_York`) |
 
 ### `[web]`
 
@@ -341,7 +351,8 @@ Every key below except `irc.nick` (and `web.password` while the panel is on) is 
 
 | Key | Default | |
 |---|---|---|
-| `kind` | **required** | `plex`, `emby`, `jellyfin`, `tofa`, `tautulli`, `seerr`, `sonarr`, `radarr`, `lidarr` |
+| `enabled` | `true` | `false` switches the block off without deleting it; its `${VAR}`s may then be unset |
+| `kind` | **required** | `plex`, `emby`, `jellyfin`, `tofa`, `tautulli`, `tracearr`, `seerr`, `sonarr`, `radarr`, `lidarr` |
 | `url` / `api_key` | **required** | base URL (a sub-path like `/sonarr` is fine) |
 | `name` | the kind | unique; used in commands and metric labels, so set it to run two of a kind (`sonarr4k`) |
 | `verify_tls` | `true` | `false` for self-signed certificates |
@@ -394,6 +405,7 @@ Inside the image:
 | Jellyfin | `Authorization: MediaBrowser Token="…"` | `/Sessions`, `/Items/Counts`, `/System/Info` |
 | Emby | `X-Emby-Token` header | `/Sessions`, `/Items/Counts`, `/System/Info` |
 | Tofa | `Authorization: Bearer <key>` | `/api/v1/system/playback/sessions`, `/api/v1/libraries`, `/api/v1/system/info` |
+| Tracearr | `Authorization: Bearer trr_pub_…` | `/api/v2/public/streams`, `/libraries`, `/servers`, `/top-media`, `/recently-added`; v1 `/api/v1/public/stats/today` |
 | Tautulli | `apikey` query parameter (removed from error messages) | `/api/v2?cmd=get_activity`, `get_libraries`, `get_tautulli_info` |
 | Seerr | `X-Api-Key` header | `/api/v1/search`, `/request`, `/request/count`, `/request/{id}/approve\|decline`, `/movie/{id}`, `/tv/{id}` |
 | Sonarr / Radarr | `X-Api-Key` header | `/api/v3/queue`, `/calendar`, `/wanted/missing` or `/movie`, `/{series\|movie}/lookup`, `/health`, `/system/status` |
@@ -410,6 +422,27 @@ Notes:
   sends the token back. Reads don't need it.
 - **Tautulli** reports on the same Plex server you may also list as `plex`, so `np` then shows those streams
   twice. Configure whichever you prefer.
+
+### Tracearr and `media_source`
+
+[Tracearr](https://github.com/connorgallopo/Tracearr) monitors Plex, Jellyfin, Emby and Tofa together. With a
+`kind = "tracearr"` service, `np` and `libs` can come from it alone, and the stats commands (`today`, `top`,
+`recent`) become available. You keep the direct server blocks; `[bot] media_source` decides who answers:
+
+| `media_source` | `np` / `libs` with no service named | direct servers polled |
+|---|---|---|
+| `auto` (default) | Tracearr while it's up, each stream labelled with its server; the direct servers if it's down | only while Tracearr is down |
+| `tracearr` | Tracearr only | never (standby) |
+| `direct` | the direct servers only | always |
+| `all` | everything (a stream can show twice) | always |
+
+- A direct server Tracearr is answering for is on **standby**: not polled, shown as `⏸ standby` in `!status`
+  and the panel, its stream / library / up series removed, and `mediabot_service_standby` = 1.
+- If Tracearr fails in the middle of a command, the bot says so and asks the direct servers instead.
+- Naming a service always asks that one: `!np plex`, `!plex`.
+- To switch a server off completely, set `enabled = false` in its block.
+- Tracearr's library API has counts but no library names, so `libs` totals them per server: movies,
+  shows (episodes) and tracks.
 
 ---
 

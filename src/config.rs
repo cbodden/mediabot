@@ -90,6 +90,29 @@ pub struct BotConfig {
     /// Per-user command cooldown in milliseconds (admins/owners exempt).
     #[serde(default = "d_cooldown")]
     pub cooldown_ms: u64,
+    /// Where `np` / `libs` get their answers when no service is named. See [`MediaSource`].
+    #[serde(default)]
+    pub media_source: MediaSource,
+    /// IANA time zone for "today" in Tracearr stats (default: $TZ, else UTC).
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+/// Which media services answer `np` / `libs` and get polled for stream metrics.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaSource {
+    /// Tracearr while an enabled Tracearr service is up (the direct servers go on standby and
+    /// aren't polled); the direct servers whenever it isn't.
+    #[default]
+    Auto,
+    /// Only Tracearr.
+    Tracearr,
+    /// Only the direct servers (Plex, Emby, Jellyfin, Tofa, Tautulli); Tracearr is still used
+    /// by `today`, `top` and `recent`.
+    Direct,
+    /// Everything (the same stream can show twice).
+    All,
 }
 
 impl Default for BotConfig {
@@ -160,6 +183,7 @@ pub enum ServiceKind {
     Jellyfin,
     Tautulli,
     Tofa,
+    Tracearr,
     Seerr,
     Sonarr,
     Radarr,
@@ -174,13 +198,19 @@ impl ServiceKind {
             Self::Jellyfin => "jellyfin",
             Self::Tautulli => "tautulli",
             Self::Tofa => "tofa",
+            Self::Tracearr => "tracearr",
             Self::Seerr => "seerr",
             Self::Sonarr => "sonarr",
             Self::Radarr => "radarr",
             Self::Lidarr => "lidarr",
         }
     }
+    /// Anything that can answer `np` / `libs`: a direct server or Tracearr.
     pub fn is_media_server(self) -> bool {
+        self.is_direct_media() || self == Self::Tracearr
+    }
+    /// The servers Tracearr can stand in for.
+    pub fn is_direct_media(self) -> bool {
         matches!(
             self,
             Self::Plex | Self::Emby | Self::Jellyfin | Self::Tautulli | Self::Tofa
@@ -194,6 +224,9 @@ impl ServiceKind {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
+    /// `false` skips the block entirely (its `${VAR}`s may then be unset). Default true.
+    #[serde(default = "d_true")]
+    pub enabled: bool,
     /// Unique name used in commands and metric labels (defaults to the kind).
     #[serde(default)]
     pub name: Option<String>,
@@ -204,6 +237,22 @@ pub struct ServiceConfig {
     pub verify_tls: bool,
     #[serde(default = "d_timeout")]
     pub timeout_secs: u64,
+}
+
+impl Config {
+    /// The `[[service]]` blocks that are enabled.
+    pub fn enabled_services(&self) -> impl Iterator<Item = &ServiceConfig> {
+        self.services.iter().filter(|s| s.enabled)
+    }
+
+    /// Time zone for Tracearr's "today" stats.
+    pub fn timezone(&self) -> String {
+        self.bot
+            .timezone
+            .clone()
+            .or_else(|| env_nonempty("TZ"))
+            .unwrap_or_else(|| "UTC".into())
+    }
 }
 
 impl ServiceConfig {
@@ -261,9 +310,39 @@ fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Line indexes inside `[[service]]` blocks that say `enabled = false`. A block runs from its
+/// `[[service]]` header to the next `[` header.
+fn disabled_service_lines(raw: &str) -> std::collections::HashSet<usize> {
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut out = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("[[service]]") {
+            let start = i;
+            i += 1;
+            while i < lines.len() && !lines[i].trim_start().starts_with('[') {
+                i += 1;
+            }
+            let disabled = lines[start..i].iter().any(|l| {
+                let code = l.split('#').next().unwrap_or("");
+                let mut kv = code.splitn(2, '=');
+                kv.next().map(str::trim) == Some("enabled")
+                    && kv.next().map(str::trim) == Some("false")
+            });
+            if disabled {
+                out.extend(start..i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Replace `${NAME}` with the environment variable NAME. Missing variables are an error
-/// so a typo never silently produces an empty password.
-fn expand_env(input: &str) -> Result<String> {
+/// so a typo never silently produces an empty password - except with `lenient` (lines of a
+/// disabled `[[service]]`), where they become empty.
+fn expand_env(input: &str, lenient: bool) -> Result<String> {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(start) = rest.find("${") {
@@ -271,8 +350,11 @@ fn expand_env(input: &str) -> Result<String> {
         let after = &rest[start + 2..];
         let end = after.find('}').context("unterminated ${ in config")?;
         let name = &after[..end];
-        let val = std::env::var(name)
-            .with_context(|| format!("config references unset env var {name}"))?;
+        let val = match std::env::var(name) {
+            Ok(v) => v,
+            Err(_) if lenient => String::new(),
+            Err(_) => bail!("config references unset env var {name}"),
+        };
         out.push_str(&val);
         rest = &after[end + 1..];
     }
@@ -305,12 +387,13 @@ impl Config {
 
     pub fn parse(raw: &str) -> Result<Self> {
         // Expand env only outside comment lines so commented examples don't need vars set.
+        let disabled = disabled_service_lines(raw);
         let mut expanded = String::new();
-        for line in raw.lines() {
+        for (i, line) in raw.lines().enumerate() {
             if line.trim_start().starts_with('#') {
                 expanded.push_str(line);
             } else {
-                expanded.push_str(&expand_env(line)?);
+                expanded.push_str(&expand_env(line, disabled.contains(&i))?);
             }
             expanded.push('\n');
         }
@@ -329,7 +412,14 @@ impl Config {
             if n.is_empty() || n.contains(char::is_whitespace) {
                 bail!("service name {n:?} must be non-empty without whitespace");
             }
-            url::Url::parse(&s.url).with_context(|| format!("service {n}: bad url"))?;
+            if s.enabled {
+                url::Url::parse(&s.url).with_context(|| format!("service {n}: bad url"))?;
+            }
+        }
+        if let Some(tz) = &self.bot.timezone
+            && (tz.is_empty() || tz.contains(char::is_whitespace))
+        {
+            bail!("[bot] timezone must be an IANA name like America/New_York");
         }
         if self.web.enabled && self.web.password.as_deref().unwrap_or("").is_empty() {
             bail!("[web] password is required when the web panel is enabled");
@@ -443,5 +533,60 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("duplicate"));
+    }
+
+    const BASE: &str = "[irc]\nnick = \"bot\"\n[web]\nenabled = false\n";
+
+    #[test]
+    fn disabled_service_may_reference_unset_vars() {
+        // enabled = false comes after the secret on purpose: the whole block counts
+        let cfg = Config::parse(&format!(
+            "{BASE}\
+             [[service]]\nkind = \"plex\"\nurl = \"${{MEDIABOT_UNSET_URL_X}}\"\napi_key = \"${{MEDIABOT_UNSET_KEY_X}}\"\nenabled = false\n\
+             [[service]]\nkind = \"sonarr\"\nurl = \"http://s\"\napi_key = \"k\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.services.len(), 2);
+        assert!(!cfg.services[0].enabled && cfg.services[1].enabled);
+        assert_eq!(cfg.services[0].api_key, "");
+        let names: Vec<String> = cfg.enabled_services().map(|s| s.name()).collect();
+        assert_eq!(names, ["sonarr"]);
+    }
+
+    #[test]
+    fn enabled_service_with_unset_var_still_fails() {
+        let err = Config::parse(&format!(
+            "{BASE}[[service]]\nkind = \"plex\"\nurl = \"http://p\"\napi_key = \"${{MEDIABOT_UNSET_KEY_Y}}\"\n\
+             [[service]]\nkind = \"emby\"\nurl = \"http://e\"\napi_key = \"k\"\nenabled = false\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("MEDIABOT_UNSET_KEY_Y"), "{err}");
+        // a commented-out `enabled = false` doesn't disable anything
+        let err = Config::parse(&format!(
+            "{BASE}[[service]]\nkind = \"plex\"\nurl = \"http://p\"\napi_key = \"${{MEDIABOT_UNSET_KEY_Z}}\"\n# enabled = false\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("MEDIABOT_UNSET_KEY_Z"), "{err}");
+    }
+
+    #[test]
+    fn media_source_and_timezone() {
+        let cfg = Config::parse(BASE).unwrap();
+        assert_eq!(cfg.bot.media_source, MediaSource::Auto);
+        let cfg = Config::parse(&format!(
+            "{BASE}[bot]\nmedia_source = \"direct\"\ntimezone = \"America/New_York\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.bot.media_source, MediaSource::Direct);
+        assert_eq!(cfg.timezone(), "America/New_York");
+        assert!(Config::parse(&format!("{BASE}[bot]\nmedia_source = \"sometimes\"\n")).is_err());
+        assert!(Config::parse(&format!("{BASE}[bot]\ntimezone = \"New York\"\n")).is_err());
+        assert_eq!(
+            Config::parse(&format!("{BASE}[[service]]\nkind = \"tracearr\"\nurl = \"https://t\"\napi_key = \"trr_pub_x\"\n"))
+                .unwrap()
+                .services[0]
+                .kind,
+            ServiceKind::Tracearr
+        );
     }
 }

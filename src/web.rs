@@ -173,24 +173,35 @@ async fn metrics(State(app): State<AppState>) -> impl IntoResponse {
 async fn status(State(app): State<AppState>) -> Json<Value> {
     let irc = app.irc_status.read().await.clone();
     let svc = app.service_status.read().await;
-    let up = svc.values().filter(|s| s.up).count();
+    let standby = svc.values().filter(|s| s.standby).count();
+    let up = svc.values().filter(|s| s.up && !s.standby).count();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "started": app.started,
         "irc": irc,
         "prefix": app.config.bot.prefix,
-        "services": { "total": svc.len(), "up": up },
+        "services": { "total": svc.len(), "up": up, "standby": standby },
     }))
 }
 
 async fn services(State(app): State<AppState>) -> Json<Value> {
     let st = app.service_status.read().await;
-    let ordered: Vec<_> = app
+    let mut list: Vec<Value> = app
         .services
         .iter()
         .filter_map(|s| st.get(&s.name))
+        .map(|s| {
+            let mut v = json!(s);
+            v["enabled"] = json!(true);
+            v
+        })
         .collect();
-    Json(json!(ordered))
+    // `enabled = false` blocks have no client or status; list them so the panel shows them
+    list.extend(app.config.services.iter().filter(|s| !s.enabled).map(|s| {
+        json!({ "name": s.name(), "kind": s.kind, "enabled": false, "up": false, "standby": false,
+                "summary": [], "version": null, "last_poll": null })
+    }));
+    Json(json!({ "media_source": app.config.bot.media_source, "services": list }))
 }
 
 async fn test_service(State(app): State<AppState>, Path(name): Path<String>) -> ApiResult {
