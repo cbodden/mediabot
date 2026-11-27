@@ -101,11 +101,56 @@ credentials to cross-site requests.
 - `deploy/prometheus-scrape.yml` is a scrape job; `deploy/grafana-dashboard.json` is a dashboard
   (Prometheus + Loki datasource pickers) to import.
 
-## Deploy
+## Docker
 
-- Docker: `Dockerfile` + `deploy/docker-compose.yml`. Use `listen = "0.0.0.0:8088"` inside the
-  container and publish to `127.0.0.1` only.
-- systemd: `deploy/mediabot.service`.
+Multi-arch images (**amd64 + arm64**) on Alpine, about 20 MB, holding a static musl binary,
+`ca-certificates` and nothing else. The container runs as uid 10001.
+
+| registry | image |
+|---|---|
+| GitHub | `ghcr.io/cbodden/mediabot` |
+| Docker Hub | `cbodden/mediabot` |
+
+| tag | built from |
+|---|---|
+| `:latest` | `main` (also rebuilt every Monday for Alpine updates) |
+| `:test` | `testing` |
+| `:X.Y.Z` | release tag `vX.Y.Z` |
+
+```sh
+cp config.example.toml config.toml   # nick, channels, owners, [[service]] entries
+cp .env.example .env                 # the secrets config.toml references as ${VAR}
+docker compose up -d                 # sample docker-compose.yml in the repo root
+```
+
+In the container:
+- `/config/config.toml` is the config. Mount it read-only.
+- `/data` holds the state (`state.json`: users and channels). Use a named volume, or a bind mount
+  owned by uid 10001.
+- The panel listens on `0.0.0.0:8088`. Publish it on `127.0.0.1` unless it's behind TLS.
+- `MEDIABOT_WEB_LISTEN` and `MEDIABOT_DATA_DIR` override `[web] listen` and `[bot] data_dir`. The
+  image sets them, so the same `config.toml` works in and out of Docker.
+- `HEALTHCHECK` polls `/healthz`. It assumes the panel is enabled and serving plain HTTP.
+- To trust a private CA (for a backend or Loki), mount its PEM file into `/etc/ssl/certs/`.
+- While the repo is private, `ghcr.io` pulls need `docker login ghcr.io` with a PAT that has
+  `read:packages`.
+
+Without Docker: `deploy/mediabot.service` is a systemd unit.
+
+### Building and releasing
+
+- **Images** — `.github/workflows/docker-images.yml` builds each architecture on a native GitHub runner. Bases come
+  from `mirror.gcr.io`, so builds never touch Docker Hub. It pushes to GHCR, then copies the tags to Docker Hub
+  (needs the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` repo secrets; without them that step is skipped).
+  Pushes to `testing` publish `:test`, merges to `main` publish `:latest`, and `vX.Y.Z` tags publish `:X.Y.Z`.
+- **Checks** — `.github/workflows/ci.yml` runs `cargo fmt --check`, clippy (`-D warnings`) and the tests on every
+  push and PR.
+- **Releases** — `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). To release:
+  1. In the `testing` → `main` PR, bump `version` in `Cargo.toml` and rename `## [Unreleased]` to
+     `## [X.Y.Z] - date`.
+  2. After the merge, tag the merge commit: `git tag -a vX.Y.Z -m "vX.Y.Z: summary" origin/main && git push origin vX.Y.Z`.
+  3. `.github/workflows/release.yml` creates the GitHub release from that CHANGELOG section. It fails if the section is
+     missing or `Cargo.toml` doesn't match the tag.
 
 ## Development
 

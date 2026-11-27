@@ -257,6 +257,10 @@ fn d_timeout() -> u64 {
     10
 }
 
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
 /// Replace `${NAME}` with the environment variable NAME. Missing variables are an error
 /// so a typo never silently produces an empty password.
 fn expand_env(input: &str) -> Result<String> {
@@ -280,7 +284,23 @@ impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse(&raw)
+        let mut cfg = Self::parse(&raw)?;
+        cfg.apply_env_overrides()?;
+        Ok(cfg)
+    }
+
+    /// Deployment overrides that beat the file, so a container image can set sane paths
+    /// (`/data`, listen on all interfaces) without the user editing their config.
+    fn apply_env_overrides(&mut self) -> Result<()> {
+        if let Some(v) = env_nonempty("MEDIABOT_WEB_LISTEN") {
+            self.web.listen = v
+                .parse()
+                .with_context(|| format!("MEDIABOT_WEB_LISTEN={v:?}"))?;
+        }
+        if let Some(v) = env_nonempty("MEDIABOT_DATA_DIR") {
+            self.bot.data_dir = v.into();
+        }
+        Ok(())
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
@@ -380,6 +400,27 @@ mod tests {
         assert_eq!(cfg.irc.channels[0].default_role, Role::ReadOnly);
         assert_eq!(cfg.services[1].name(), "sonarr4k");
         assert_eq!(cfg.bot.prefix, "!");
+    }
+
+    #[test]
+    fn env_overrides_beat_the_file() {
+        let mut cfg = Config::parse(
+            "[irc]\nnick = \"bot\"\n[web]\npassword = \"x\"\nlisten = \"127.0.0.1:1\"\n[bot]\ndata_dir = \"d\"\n",
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("MEDIABOT_WEB_LISTEN", "0.0.0.0:8088");
+            std::env::set_var("MEDIABOT_DATA_DIR", "/data");
+        }
+        cfg.apply_env_overrides().unwrap();
+        assert_eq!(cfg.web.listen.to_string(), "0.0.0.0:8088");
+        assert_eq!(cfg.bot.data_dir, std::path::PathBuf::from("/data"));
+        unsafe { std::env::set_var("MEDIABOT_WEB_LISTEN", "nonsense") };
+        assert!(cfg.apply_env_overrides().is_err());
+        unsafe {
+            std::env::remove_var("MEDIABOT_WEB_LISTEN");
+            std::env::remove_var("MEDIABOT_DATA_DIR");
+        }
     }
 
     #[test]

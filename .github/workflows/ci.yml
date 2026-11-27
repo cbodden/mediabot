@@ -1,0 +1,25 @@
+## fmt + clippy + tests on every push and pull request (images are built by docker-images.yml)
+name: ci
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', 'deploy/**', 'docker-compose.yml', '.env.example']
+  pull_request:
+    paths-ignore: ['**.md', 'deploy/**', 'docker-compose.yml', '.env.example']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked

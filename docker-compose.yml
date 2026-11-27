@@ -1,0 +1,36 @@
+## mediabot - sample compose file
+##   1. cp config.example.toml config.toml   edit nick, channels, owners and [[service]] entries
+##   2. cp .env.example .env                 passwords / api keys that config.toml references as ${VAR}
+##   3. docker compose up -d                 web panel on http://127.0.0.1:8088
+##
+## images (amd64 + arm64):  ghcr.io/cbodden/mediabot  or  cbodden/mediabot (docker hub)
+##   :latest = main   :test = testing branch   :X.Y.Z = release
+##
+## inside the container the panel listens on 0.0.0.0:8088 (MEDIABOT_WEB_LISTEN) and state goes to
+## /data (MEDIABOT_DATA_DIR) whatever config.toml says - keep the published port on 127.0.0.1 unless
+## it's behind TLS (a reverse proxy, or tls_cert / tls_key in config.toml).
+services:
+  mediabot:
+    image: ghcr.io/cbodden/mediabot:latest
+    container_name: mediabot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+      ## users + channels (state.json). a bind mount works too, owned by uid 10001:
+      ##   mkdir -p data && sudo chown 10001:10001 data   then   - ./data:/data
+      - mediabot-data:/data
+      ## a private CA for your backends / loki:  - ./my-ca.crt:/etc/ssl/certs/my-ca.pem:ro
+    ports:
+      - "127.0.0.1:8088:8088"   # web panel + /metrics + /healthz
+    ## logs: mediabot can ship straight to loki ([telemetry.loki] in config.toml); or use the docker driver:
+    # logging:
+    #   driver: loki
+    #   options:
+    #     loki-url: https://loki.example/loki/api/v1/push
+    #     loki-external-labels: job=mediabot
+
+volumes:
+  mediabot-data:
