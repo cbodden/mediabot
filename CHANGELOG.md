@@ -9,6 +9,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+
+## [0.1.1] - 2026-11-27
+
+### Fixed
+- Docker images: the 0.1.0 images (`:0.1.0`, `:latest`, `:test`) contained an empty placeholder program instead
+  of the bot, so the container exited immediately with no output and restarted in a loop. The image now builds
+  once from the real sources, and the build fails unless the binary reports exactly the version in
+  `Cargo.toml`; the final image checks it again
+
 ### Changed
 - README rewritten as a step-by-step guide: setup in five steps, commands grouped by task, and full
   reference tables for configuration (with defaults), environment variables, the web API, metrics, Docker
@@ -35,5 +44,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   store as well as the built-in Mozilla roots
 
 
-[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/cbodden/mediabot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cbodden/mediabot/releases/tag/v0.1.0

@@ -6,15 +6,22 @@ ARG ALPINE_VERSION=3.23
 FROM mirror.gcr.io/library/rust:1-alpine${ALPINE_VERSION} AS build
 RUN apk add --no-cache musl-dev
 WORKDIR /src
-## dependencies first, in their own layer, so a source-only change doesn't rebuild them
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
- && cargo build --release --locked \
- && rm -rf src target/release/mediabot target/release/deps/mediabot-* target/release/.fingerprint/mediabot-*
 COPY src src
 COPY web web
 COPY config.example.toml ./
-RUN cargo build --release --locked && cp target/release/mediabot /mediabot
+## one clean build from the real sources. 0.1.0 pre-built the dependencies with a placeholder main.rs in an
+## earlier layer; cargo then treated that placeholder as up to date and the images shipped an empty binary.
+## only the crate download cache is a cache mount - never target/, where old artifacts can look newer than
+## freshly copied sources and get reused the same way.
+## the build fails unless the binary reports exactly the version in Cargo.toml.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --locked \
+ && cp target/release/mediabot /mediabot \
+ && sed -n 's/^version = "\(.*\)"$/mediabot \1/p' Cargo.toml | head -1 > /mediabot.version \
+ && echo "built: [$(/mediabot --version)]  expected: [$(cat /mediabot.version)]" \
+ && test "$(/mediabot --version)" = "$(cat /mediabot.version)" \
+ && rm -rf target
 
 FROM mirror.gcr.io/library/alpine:${ALPINE_VERSION}
 LABEL org.opencontainers.image.source="https://github.com/cbodden/mediabot" \
@@ -26,9 +33,12 @@ RUN apk add --no-cache ca-certificates \
  && mkdir -p /data /config \
  && chown mediabot:mediabot /data
 COPY --from=build /mediabot /usr/local/bin/mediabot
+COPY --from=build /mediabot.version /tmp/expected-version
 COPY config.example.toml /config/config.example.toml
-## fail the build if the binary doesn't run on this base
-RUN mediabot --version
+## fail the build unless the real bot runs on this base: exact version, and its usage lists --config
+RUN test "$(mediabot --version)" = "$(cat /tmp/expected-version)" \
+ && mediabot --help | grep -q -- '--config' \
+ && rm /tmp/expected-version
 USER mediabot
 WORKDIR /data
 ## the config file comes from a mount; state (users, channels) lives in /data
