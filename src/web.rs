@@ -120,6 +120,7 @@ pub fn router(app: AppState) -> Router {
         .route("/api/command", post(command))
         .route("/api/reconnect", post(reconnect))
         .route("/api/logs", get(logs))
+        .route("/api/commands", get(command_list))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
 }
@@ -328,6 +329,15 @@ async fn reconnect(State(app): State<AppState>) -> Json<Value> {
 struct LogQuery {
     #[serde(default)]
     since: u64,
+}
+
+/// Every chat command (the same table as `!help` and docs/COMMANDS.md).
+async fn command_list(State(app): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "prefix": app.config.bot.prefix,
+        "groups": commands::GROUPS,
+        "commands": commands::COMMANDS,
+    }))
 }
 
 async fn logs(State(app): State<AppState>, Query(q): Query<LogQuery>) -> Json<Value> {

@@ -179,49 +179,17 @@ card does the same.
 
 ### Commands
 
-`!help` lists the commands available to you, and `!help <command>` shows usage and aliases.
+The full reference — every command with usage, required role, aliases, limits and examples — is in
+**[docs/COMMANDS.md](docs/COMMANDS.md)**. The same list is in the web panel's **Commands** card, and
+`!help <command>` shows any of them in IRC.
 
-**General**
-
-| Command | Role | Does |
-|---|---|---|
-| `help [command]` | readonly | list commands, or detail one |
-| `whoami` | anyone | your hostmask, account and role |
-| `status` | readonly | bot uptime and channels, then each service as ✓ version or ✗ error |
-
-**Media servers** (Plex, Emby, Jellyfin, Tofa, Tautulli)
-
-| Command | Role | Does |
-|---|---|---|
-| `np [service]` | readonly | each stream: user, title, quality, transcode or direct, progress, device; plus bandwidth |
-| `libs [service]` | readonly | items per library (with episodes / tracks where known) |
-
-**Requests** (Seerr). Requests are created as the user who owns the Seerr API key.
-
-| Command | Role | Does |
-|---|---|---|
-| `search <title>` | readonly | up to 5 movies / shows with TMDB id and availability |
-| `requests [filter]` | readonly | up to 6 requests; filter is `pending` (default), `approved`, `processing`, `available`, `unavailable`, `failed`, `completed`, `deleted` or `all` |
-| `request <movie\|tv> <tmdb-id> [seasons]` | admin | request it; TV gets all seasons unless you list them, e.g. `1,2` |
-| `approve <id>` / `decline <id>` | admin | moderate a request (ids come from `requests`) |
-
-**Downloads** (Sonarr, Radarr, Lidarr). With no service named, every configured \*arr answers.
-
-| Command | Role | Does |
-|---|---|---|
-| `queue [service]` | readonly | queue size, then up to 5 items with progress and time left |
-| `upcoming [service] [days]` | readonly | releases in the next 7 days (1–60), up to 6 per service |
-| `missing [service]` | readonly | count of monitored items without files, plus up to 5 |
-| `lookup <service> <term>` | readonly | up to 4 matches, saying whether each is in the library (and how complete) |
-| `health [service]` | readonly | warnings from the \*arr's own health checks |
-
-**Admin**
-
-| Command | Role | Does |
-|---|---|---|
-| `users …` | admin | see [Managing users](#managing-users) |
-| `join <#channel> [none\|readonly] [key]` | owner | join and remember the channel; the role is what unknown users get there |
-| `part <#channel>` | owner | leave and forget the channel |
+| Area | Commands |
+|---|---|
+| General | `help`, `whoami`, `status` |
+| Media servers (Plex, Emby, Jellyfin, Tofa, Tautulli) | `np`, `libs` |
+| Requests (Seerr) | `search`, `requests`, and for admins `request`, `approve`, `decline` |
+| Downloads (Sonarr, Radarr, Lidarr) | `queue`, `upcoming`, `missing`, `lookup`, `health` |
+| Admin | `users` (admins), `join`, `part` (owners) |
 
 ---
 
@@ -232,6 +200,8 @@ Served on `[web] listen` (default `127.0.0.1:8088`), behind HTTP basic auth. It 
 - **IRC**: server, nick, account, channels, uptime, last error, and a **Reconnect** button
 - **Services**: up or down, version, a summary, last poll and latency, plus a **Test** button
 - **Users** and **Channels**: add, remove, join and part
+- **Commands**: every command with usage, role and examples, with a filter; clicking an example loads it
+  into the console
 - **Console**: runs any bot command as an owner, without IRC
 - **Send message**: to a channel or nick
 - **Logs**: live, info level and above
@@ -258,6 +228,7 @@ headers to them.
 | `POST /api/command` `{"command"}` | run a bot command, returns `{"lines":[…]}` |
 | `POST /api/reconnect` | reconnect to IRC |
 | `GET /api/logs?since=<seq>` | log lines newer than `seq` (the last 1000 are kept) |
+| `GET /api/commands` | the command reference: prefix, groups and every command |
 
 ```sh
 curl -u admin:$PW -H 'X-Mediabot: 1' -H 'Content-Type: application/json' \
@@ -454,7 +425,8 @@ Notes:
 | `Permission denied` on `/data` | a bind mount must be owned by uid 10001, or use a named volume |
 | Startup error `config references unset env var X` | set `X` (for example in `.env`) |
 
-Run `mediabot --check` to validate a config without connecting. Set `RUST_LOG=debug` to see raw IRC traffic.
+Run `mediabot --check` to validate a config without connecting, and `mediabot --commands` to print the
+command reference. Set `RUST_LOG=debug` to see raw IRC traffic.
 
 ---
 
@@ -465,6 +437,8 @@ cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
 RUST_LOG=debug cargo run -- --config config.toml
 ```
 
+- **Command docs**: `docs/COMMANDS.md` is generated from the `COMMANDS` table in `src/commands.rs`.
+  After changing a command, run `UPDATE_DOCS=1 cargo test commands_doc`; CI fails while the file is stale.
 - **Branches**: work lands on `testing` (published as `:test`), then reaches `main` (`:latest`) by pull request.
 - **CI** ([`ci.yml`](.github/workflows/ci.yml)): format, clippy and tests on every push and pull request.
 - **Images** ([`docker-images.yml`](.github/workflows/docker-images.yml)):

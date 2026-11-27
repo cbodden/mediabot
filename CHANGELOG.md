@@ -9,6 +9,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `docs/COMMANDS.md`: every command with usage, required role, aliases, limits and examples. It is generated
+  from the command table in `src/commands.rs` (the same table `!help` uses); a test fails CI if it's stale
+  (`UPDATE_DOCS=1 cargo test commands_doc` regenerates it), and `mediabot --commands` prints it
+- Web panel: a **Commands** card listing every command by group, with search and a role filter; clicking an
+  example loads it into the console. Backed by the new `GET /api/commands`
+- `!help <command>` also shows examples
+
+### Changed
+- README's command section now summarises and links to `docs/COMMANDS.md`
+
 
 ## [0.1.1] - 2026-11-27
 
