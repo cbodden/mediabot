@@ -9,11 +9,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-- Seerr: `request`, `approve` and `decline` failed with `HTTP 403 {"message":"invalid csrf token"}` when Seerr's
-  **CSRF Protection** is on (Settings → Network), because Seerr checks writes even when they use the API key.
-  The bot now fetches Seerr's CSRF cookies, retries the write once with them and the `X-XSRF-TOKEN` header,
-  and reuses them for later writes; with CSRF Protection off nothing changes (#6)
+
+## [0.2.0] - 2026-11-27
 
 ### Added
 - `docs/COMMANDS.md`: every command with usage, required role, aliases, limits and examples. It is generated
@@ -25,6 +22,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - README's command section now summarises and links to `docs/COMMANDS.md`
+
+### Fixed
+- Seerr: `request`, `approve` and `decline` failed with `HTTP 403 {"message":"invalid csrf token"}` when Seerr's
+  **CSRF Protection** is on (Settings → Network), because Seerr checks writes even when they use the API key.
+  The bot now fetches Seerr's CSRF cookies, retries the write once with them and the `X-XSRF-TOKEN` header,
+  and reuses them for later writes; with CSRF Protection off nothing changes (#6)
 
 
 ## [0.1.1] - 2026-11-27
@@ -63,6 +66,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   store as well as the built-in Mozilla roots
 
 
-[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cbodden/mediabot/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cbodden/mediabot/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/cbodden/mediabot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cbodden/mediabot/releases/tag/v0.1.0
