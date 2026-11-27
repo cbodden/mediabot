@@ -29,7 +29,7 @@ self-hosted media stack and lets trusted people act on it.
 | Control | — | a local web panel (HTTP or HTTPS) with a command console |
 | Monitoring | Prometheus, Loki, Grafana | `/metrics`, log shipping with an audit trail, a ready-made dashboard |
 
-Images for **amd64 and arm64** (Alpine, ~4.5 MB): `cbodden/mediabot` on Docker Hub and
+Images for **amd64 and arm64** (Alpine, ~8.6 MB download): `cbodden/mediabot` on Docker Hub and
 `ghcr.io/cbodden/mediabot`.
 
 ## Contents
