@@ -1,4 +1,4 @@
-//! Plex, Emby, Jellyfin and Tautulli: now-playing sessions and library counts.
+//! Plex, Emby, Jellyfin, Tautulli and Tofa: now-playing sessions and library counts.
 
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -28,7 +28,8 @@ pub struct Library {
     pub name: String,
     /// movie / show / artist / photo / ... (normalized lowercase)
     pub kind: String,
-    pub count: u64,
+    /// None when the server doesn't report a count (Tofa's schema is undocumented).
+    pub count: Option<u64>,
     /// Episodes for shows, tracks for music, when known.
     pub children: Option<u64>,
 }
@@ -53,6 +54,7 @@ impl Service {
             ServiceKind::Plex => self.plex_activity().await,
             ServiceKind::Emby | ServiceKind::Jellyfin => self.emby_activity().await,
             ServiceKind::Tautulli => self.tautulli_activity().await,
+            ServiceKind::Tofa => self.tofa_activity().await,
             k => bail!("{} is not a media server", k.as_str()),
         }
     }
@@ -62,6 +64,7 @@ impl Service {
             ServiceKind::Plex => self.plex_libraries().await,
             ServiceKind::Emby | ServiceKind::Jellyfin => self.emby_libraries().await,
             ServiceKind::Tautulli => self.tautulli_libraries().await,
+            ServiceKind::Tofa => self.tofa_libraries().await,
             k => bail!("{} is not a media server", k.as_str()),
         }
     }
@@ -150,7 +153,7 @@ impl Service {
             out.push(Library {
                 name: s(d, "title"),
                 kind,
-                count,
+                count: Some(count),
                 children,
             });
         }
@@ -231,7 +234,7 @@ impl Service {
                 (count > 0).then(|| Library {
                     name: name.to_string(),
                     kind: kind.to_string(),
-                    count,
+                    count: Some(count),
                     children: child.and_then(|c| n(&v, c)).map(|x| x as u64),
                 })
             })
@@ -287,12 +290,99 @@ impl Service {
                         "show" | "artist" => n(l, "child_count").map(|x| x as u64),
                         _ => None,
                     },
-                    count: n(l, "count").unwrap_or(0.0) as u64,
+                    count: n(l, "count").map(|x| x as u64),
                     kind,
                 }
             })
             .collect())
     }
+}
+
+impl Service {
+    // ---- Tofa (https://docs.tofa.tv/api.html) ------------------------------------------
+    //
+    // The REST responses have no published schema. Session field names follow the
+    // documented live-event payloads, which the docs say the session list shares; the rest
+    // is parsed defensively so a renamed field degrades to "?" instead of an error.
+
+    async fn tofa_activity(&self) -> Result<Activity> {
+        let v = self.get("/api/v1/system/playback/sessions", &[]).await?;
+        let sessions = list_of(&v, &["sessions", "items", "data", "results"]);
+        let mut bw = 0.0;
+        let mut have_bw = false;
+        let streams = sessions
+            .iter()
+            .map(|x| {
+                if let Some(b) = n(x, "bitrate_kbps") {
+                    bw += b;
+                    have_bw = true;
+                }
+                let method = first_nonempty(&[s(x, "play_method"), s(x, "delivery_method")]);
+                let transcode = method.eq_ignore_ascii_case("transcode")
+                    || (!s(x, "output_video_codec").is_empty()
+                        && !s(x, "video_codec").is_empty()
+                        && s(x, "output_video_codec") != s(x, "video_codec"));
+                let progress = n(x, "progress_pct").or_else(|| {
+                    pct(
+                        n(x, "position_ms"),
+                        n(x, "duration_ms").or(n(x, "runtime_ms")),
+                    )
+                });
+                Stream {
+                    user: first_nonempty(&[s(x, "username"), s(x, "profile_name"), s(x, "user")]),
+                    title: first_nonempty(&[s(x, "media_title"), s(x, "title")]),
+                    paused: x["is_paused"].as_bool().unwrap_or(false),
+                    progress,
+                    transcode,
+                    player: first_nonempty(&[
+                        s(x, "device_name"),
+                        s(x, "client"),
+                        s(x, "platform"),
+                    ]),
+                    quality: Some(first_nonempty(&[
+                        s(x, "resolution"),
+                        s(x, "source_resolution"),
+                    ]))
+                    .filter(|q| !q.is_empty()),
+                }
+            })
+            .collect();
+        Ok(Activity {
+            streams,
+            bandwidth_kbps: have_bw.then_some(bw),
+        })
+    }
+
+    async fn tofa_libraries(&self) -> Result<Vec<Library>> {
+        let v = self.get("/api/v1/libraries", &[]).await?;
+        Ok(list_of(&v, &["libraries", "items", "data", "results"])
+            .iter()
+            .map(|l| Library {
+                name: first_nonempty(&[s(l, "name"), s(l, "title"), s(l, "id")]),
+                kind: first_nonempty(&[s(l, "type"), s(l, "kind"), s(l, "media_type")])
+                    .to_ascii_lowercase(),
+                count: ["item_count", "media_count", "title_count", "count", "total"]
+                    .iter()
+                    .find_map(|k| n(l, k))
+                    .map(|x| x as u64),
+                children: ["episode_count", "child_count"]
+                    .iter()
+                    .find_map(|k| n(l, k))
+                    .map(|x| x as u64),
+            })
+            .collect())
+    }
+}
+
+/// A JSON array, either bare or wrapped in one of `keys`.
+fn list_of<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Vec<&'a serde_json::Value> {
+    if let Some(a) = v.as_array() {
+        return a.iter().collect();
+    }
+    keys.iter()
+        .find_map(|k| v[*k].as_array())
+        .map(|a| a.iter().collect())
+        .unwrap_or_default()
 }
 
 fn first_nonempty(opts: &[String]) -> String {

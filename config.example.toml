@@ -59,7 +59,7 @@ json_logs = false
 # tenant = "home"
 
 # ---------------------------------------------------------------------------------------
-# Services. `kind` is one of: plex, emby, jellyfin, tautulli, seerr, sonarr, radarr, lidarr.
+# Services. `kind` is one of: plex, emby, jellyfin, tautulli, tofa, seerr, sonarr, radarr, lidarr.
 # `name` defaults to the kind; set it when you have two of the same kind (e.g. sonarr4k).
 # Names double as IRC shorthand: "!sonarr4k queue", "!plex".
 # ---------------------------------------------------------------------------------------
@@ -83,6 +83,11 @@ api_key = "${EMBY_API_KEY}"
 kind = "tautulli"
 url = "http://tautulli:8181"
 api_key = "${TAUTULLI_API_KEY}"
+
+[[service]]
+kind = "tofa"                       # https://tofa.tv (beta API)
+url = "http://tofa:33333"
+api_key = "${TOFA_API_KEY}"        # Admin > Settings > API > API keys; "Read only" is enough
 
 [[service]]
 kind = "seerr"                      # Seerr / Overseerr / Jellyseerr

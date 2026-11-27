@@ -2,7 +2,7 @@
 
 An IRC bot (Rust) for Libera.Chat that reports on your media stack:
 
-- **Media servers** — Plex, Emby, Jellyfin, Tautulli: now playing, transcodes, bandwidth, library counts
+- **Media servers** — Plex, Emby, Jellyfin, [Tofa](https://tofa.tv), Tautulli (Plex stats): now playing, transcodes, bandwidth, library counts
 - **Requests** — Seerr (Overseerr / Jellyseerr API): search, request, list, approve/decline
 - **\*arr** — Sonarr, Radarr, Lidarr: queue, upcoming, missing, library lookup, health
 - **Ownership** — owners (config) → admins → read-only users, keyed on NickServ accounts
@@ -59,7 +59,7 @@ Replies in channels are capped at `max_lines` (PMs get 3×).
 | Command | Role | |
 |---|---|---|
 | `help [cmd]`, `whoami`, `status` | ro / none / ro | help, your identity, backend health + versions |
-| `np [server]` | ro | now playing across Plex/Emby/Jellyfin/Tautulli |
+| `np [server]` | ro | now playing across Plex/Emby/Jellyfin/Tofa/Tautulli |
 | `libs [server]` | ro | library counts |
 | `search <title>` | ro | Seerr search with availability + TMDB ids |
 | `requests [pending\|approved\|…]` | ro | Seerr request list |
@@ -116,5 +116,7 @@ RUST_LOG=debug cargo run   # shows raw IRC traffic (SASL payload redacted)
 ```
 
 API notes: Plex uses `X-Plex-Token`; Jellyfin uses the `MediaBrowser Token=` authorization header;
-Emby uses `X-Emby-Token`; Tautulli uses `apikey` (scrubbed from error messages); Seerr and the
+Emby uses `X-Emby-Token`; Tofa uses `Authorization: Bearer <admin API key>` against
+`/api/v1/system/playback/sessions` and `/api/v1/libraries` (Tofa doesn't publish response
+schemas yet, so fields are parsed defensively and an unknown library count shows as `?`); Tautulli uses `apikey` (scrubbed from error messages); Seerr and the
 \*arrs use `X-Api-Key`. Seerr searches are strictly percent-encoded (`%20`), as Seerr expects.

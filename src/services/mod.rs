@@ -60,6 +60,13 @@ impl Service {
                 headers.insert(header::AUTHORIZATION, header::HeaderValue::from_str(&v)?);
             }
             ServiceKind::Tautulli => {} // query parameter
+            ServiceKind::Tofa => {
+                // Admin > Settings > API > API keys ("Read only" is enough).
+                headers.insert(
+                    header::AUTHORIZATION,
+                    header::HeaderValue::from_str(&format!("Bearer {key}"))?,
+                );
+            }
             ServiceKind::Seerr
             | ServiceKind::Sonarr
             | ServiceKind::Radarr
@@ -164,6 +171,16 @@ impl Service {
             }
             ServiceKind::Emby | ServiceKind::Jellyfin => {
                 self.get("/System/Info", &[]).await?["Version"].clone()
+            }
+            ServiceKind::Tofa => {
+                let v = self.get("/api/v1/system/info", &[]).await?;
+                // The schema is undocumented; take the most specific version field present.
+                let ver = ["server_version", "version", "api_version"]
+                    .iter()
+                    .map(|k| s(&v, k))
+                    .find(|x| !x.is_empty())
+                    .unwrap_or_default();
+                Value::String(ver)
             }
             ServiceKind::Tautulli => {
                 let r = self

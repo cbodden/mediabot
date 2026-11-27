@@ -152,10 +152,12 @@ async fn collect(
                 let libs = svc.libraries().await?;
                 let mut seen = vec![];
                 for l in &libs {
-                    m.library_items
-                        .with_label_values(&[name, kind, &l.name, &l.kind])
-                        .set(l.count as i64);
-                    seen.push((l.name.clone(), l.kind.clone()));
+                    if let Some(c) = l.count {
+                        m.library_items
+                            .with_label_values(&[name, kind, &l.name, &l.kind])
+                            .set(c as i64);
+                        seen.push((l.name.clone(), l.kind.clone()));
+                    }
                     if let Some(c) = l.children {
                         let ck = format!("{}_children", l.kind);
                         m.library_items

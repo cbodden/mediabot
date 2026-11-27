@@ -62,7 +62,7 @@ const COMMANDS: &[Spec] = &[
         aliases: &["streams", "playing", "nowplaying"],
         role: Role::ReadOnly,
         usage: "np [server]",
-        help: "what's playing on plex/emby/jellyfin/tautulli",
+        help: "what's playing on plex/emby/jellyfin/tautulli/tofa",
     },
     Spec {
         name: "libs",
@@ -540,7 +540,11 @@ async fn libraries(app: &App, which: Option<&str>) -> Result<Vec<String>> {
                             (Some(c), "artist") => format!(" ({c} tracks)"),
                             _ => String::new(),
                         };
-                        format!("{} {}{child}", l.name, l.count)
+                        format!(
+                            "{} {}{child}",
+                            l.name,
+                            l.count.map_or("?".into(), |c| c.to_string())
+                        )
                     })
                     .collect();
                 lines.push(format!("{B}{}{B}: {}", svc.name, parts.join(" · ")));

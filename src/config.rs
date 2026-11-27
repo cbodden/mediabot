@@ -159,6 +159,7 @@ pub enum ServiceKind {
     Emby,
     Jellyfin,
     Tautulli,
+    Tofa,
     Seerr,
     Sonarr,
     Radarr,
@@ -172,6 +173,7 @@ impl ServiceKind {
             Self::Emby => "emby",
             Self::Jellyfin => "jellyfin",
             Self::Tautulli => "tautulli",
+            Self::Tofa => "tofa",
             Self::Seerr => "seerr",
             Self::Sonarr => "sonarr",
             Self::Radarr => "radarr",
@@ -181,7 +183,7 @@ impl ServiceKind {
     pub fn is_media_server(self) -> bool {
         matches!(
             self,
-            Self::Plex | Self::Emby | Self::Jellyfin | Self::Tautulli
+            Self::Plex | Self::Emby | Self::Jellyfin | Self::Tautulli | Self::Tofa
         )
     }
     pub fn is_arr(self) -> bool {
