@@ -27,6 +27,52 @@ pub struct Service {
     key: String,
     http: reqwest::Client,
     metrics: Arc<Metrics>,
+    /// Seerr's CSRF cookies + token, fetched the first time a write is refused (see [`Csrf`]).
+    csrf: tokio::sync::Mutex<Option<Csrf>>,
+}
+
+/// Seerr with "CSRF Protection" on (Settings → Network) rejects every POST - API key or not - unless it
+/// carries the `_csrf` cookie and the matching token in an `X-XSRF-TOKEN` header. Seerr hands both out as
+/// cookies on any response, marked `Secure` in production, so a normal cookie jar would drop them over
+/// plain http; they're read from `Set-Cookie` and sent back by hand instead.
+#[derive(Clone, Debug, PartialEq)]
+struct Csrf {
+    /// Every cookie Seerr set, as a `Cookie:` header value.
+    cookie: String,
+    /// The decoded `XSRF-TOKEN` cookie.
+    token: String,
+}
+
+impl Csrf {
+    fn from_set_cookies<'a>(values: impl Iterator<Item = &'a str>) -> Option<Csrf> {
+        let mut pairs = vec![];
+        let mut token = None;
+        for v in values {
+            let Some((name, value)) = v.split(';').next().and_then(|p| p.trim().split_once('='))
+            else {
+                continue;
+            };
+            if name == "XSRF-TOKEN" {
+                token = Some(
+                    percent_encoding::percent_decode_str(value)
+                        .decode_utf8_lossy()
+                        .into_owned(),
+                );
+            }
+            pairs.push(format!("{name}={value}"));
+        }
+        Some(Csrf {
+            cookie: pairs.join("; "),
+            token: token?,
+        })
+    }
+}
+
+fn is_csrf_rejection(status: reqwest::StatusCode, body: &[u8]) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN
+        && String::from_utf8_lossy(body)
+            .to_ascii_lowercase()
+            .contains("csrf")
 }
 
 impl Service {
@@ -94,6 +140,7 @@ impl Service {
             key,
             http,
             metrics,
+            csrf: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -117,6 +164,57 @@ impl Service {
         u
     }
 
+    /// One HTTP round trip; records latency. `csrf` adds Seerr's CSRF cookie + header.
+    async fn send(
+        &self,
+        method: &Method,
+        url: &str,
+        body: Option<&Value>,
+        csrf: Option<&Csrf>,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+        let mut rb = self.http.request(method.clone(), url);
+        if let Some(b) = body {
+            rb = rb.json(b);
+        }
+        if let Some(c) = csrf {
+            let mut cookie =
+                header::HeaderValue::from_str(&c.cookie).context("Seerr CSRF cookie")?;
+            cookie.set_sensitive(true);
+            let mut token = header::HeaderValue::from_str(&c.token).context("Seerr CSRF token")?;
+            token.set_sensitive(true);
+            rb = rb
+                .header(header::COOKIE, cookie)
+                .header("X-XSRF-TOKEN", token);
+        }
+        let start = Instant::now();
+        let res = rb.send().await;
+        self.metrics
+            .service_latency
+            .with_label_values(&[&self.name, self.kind.as_str()])
+            .observe(start.elapsed().as_secs_f64());
+        let resp = res.map_err(|e| anyhow!("{}: {}", self.name, strip_url(&e)))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.context("reading body")?;
+        Ok((status, bytes.to_vec()))
+    }
+
+    /// Get Seerr's CSRF cookies from any response (`/api/v1/status` needs no auth).
+    async fn fetch_csrf(&self) -> Result<Csrf> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/status", &[]))
+            .send()
+            .await
+            .map_err(|e| anyhow!("{}: {}", self.name, strip_url(&e)))?;
+        let values = resp.headers().get_all(header::SET_COOKIE);
+        Csrf::from_set_cookies(values.iter().filter_map(|v| v.to_str().ok())).ok_or_else(|| {
+            anyhow!(
+                "{}: Seerr refused the request as a CSRF failure but sent no XSRF-TOKEN cookie",
+                self.name
+            )
+        })
+    }
+
     pub async fn request(
         &self,
         method: Method,
@@ -125,20 +223,25 @@ impl Service {
         body: Option<Value>,
     ) -> Result<Value> {
         let url = self.url(path, query);
-        let mut rb = self.http.request(method.clone(), &url);
-        if let Some(b) = body {
-            rb = rb.json(&b);
-        }
-        let start = Instant::now();
-        let res = rb.send().await;
-        self.metrics
-            .service_latency
-            .with_label_values(&[&self.name, self.kind.as_str()])
-            .observe(start.elapsed().as_secs_f64());
+        // only Seerr writes can be refused for CSRF; GETs never are
+        let csrf_ok =
+            self.kind == ServiceKind::Seerr && method != Method::GET && method != Method::HEAD;
         let outcome = async {
-            let resp = res.map_err(|e| anyhow!("{}: {}", self.name, strip_url(&e)))?;
-            let status = resp.status();
-            let bytes = resp.bytes().await.context("reading body")?;
+            let cached = if csrf_ok { self.csrf.lock().await.clone() } else { None };
+            let (mut status, mut bytes) = self.send(&method, &url, body.as_ref(), cached.as_ref()).await?;
+            if csrf_ok && is_csrf_rejection(status, &bytes) {
+                // first write with CSRF Protection on, or the cached token went stale: fetch, retry once
+                let fresh = self.fetch_csrf().await?;
+                *self.csrf.lock().await = Some(fresh.clone());
+                (status, bytes) = self.send(&method, &url, body.as_ref(), Some(&fresh)).await?;
+                if is_csrf_rejection(status, &bytes) {
+                    bail!(
+                        "{} {method} {path}: Seerr still rejects the CSRF token (HTTP {status}); check \
+                         Settings → Network → CSRF Protection",
+                        self.name
+                    );
+                }
+            }
             if !status.is_success() {
                 let snippet =
                     String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).replace('\n', " ");
@@ -276,5 +379,153 @@ mod tests {
             s.url("/api/v2", &[("cmd", "get activity!".into())]),
             "http://t:8181/api/v2?cmd=get%20activity%21&apikey=abc"
         );
+    }
+
+    #[test]
+    fn csrf_cookies_parsed() {
+        let c = Csrf::from_set_cookies(
+            [
+                "_csrf=s3cr3t; Path=/; HttpOnly; Secure; SameSite=Strict",
+                "XSRF-TOKEN=abc%3Ddef; Path=/; Secure; SameSite=Strict",
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(c.cookie, "_csrf=s3cr3t; XSRF-TOKEN=abc%3Ddef");
+        assert_eq!(c.token, "abc=def");
+        assert!(Csrf::from_set_cookies(["connect.sid=x; Path=/api"].into_iter()).is_none());
+    }
+
+    /// A fake Seerr: every response sets `_csrf` + `XSRF-TOKEN` (Secure, like production). With `csrf_on`,
+    /// a POST without the matching cookie and X-XSRF-TOKEN header gets 403 "invalid csrf token".
+    /// `secret` can be changed mid-test to simulate the server rotating its secret. Returns the base URL
+    /// and a log of "METHOD path status" lines.
+    async fn fake_seerr(
+        csrf_on: bool,
+        secret: Arc<std::sync::Mutex<String>>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log = Arc::new(std::sync::Mutex::new(vec![]));
+        let log2 = log.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let (log, secret) = (log2.clone(), secret.clone());
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let mut n = 0;
+                    while !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                        let r = sock.read(&mut buf[n..]).await.unwrap();
+                        if r == 0 {
+                            return;
+                        }
+                        n += r;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let first = req.lines().next().unwrap_or("").to_string();
+                    let (method, path) = {
+                        let mut p = first.split_whitespace();
+                        (
+                            p.next().unwrap_or("").to_string(),
+                            p.next().unwrap_or("").to_string(),
+                        )
+                    };
+                    let hdr = |name: &str| {
+                        req.lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                            })
+                            .unwrap_or_default()
+                    };
+                    let secret = secret.lock().unwrap().clone();
+                    let token = format!("tok-{secret}=");
+                    let (status, body) = if method == "POST" && csrf_on {
+                        let ok = hdr("cookie").contains(&format!("_csrf={secret}"))
+                            && hdr("x-xsrf-token") == token;
+                        if ok {
+                            ("201 Created", r#"{"id":77,"status":2}"#)
+                        } else {
+                            ("403 Forbidden", r#"{"message":"invalid csrf token"}"#)
+                        }
+                    } else if method == "POST" {
+                        ("201 Created", r#"{"id":77,"status":2}"#)
+                    } else {
+                        ("200 OK", r#"{"version":"2.7.0"}"#)
+                    };
+                    log.lock()
+                        .unwrap()
+                        .push(format!("{method} {path} {}", &status[..3]));
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                         Set-Cookie: _csrf={secret}; Path=/; HttpOnly; Secure; SameSite=Strict\r\n\
+                         Set-Cookie: XSRF-TOKEN={}; Path=/; Secure; SameSite=Strict\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len(),
+                        token.replace('=', "%3D"),
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{addr}"), log)
+    }
+
+    fn seerr_service(url: &str) -> Service {
+        let cfg = ServiceConfig {
+            name: None,
+            kind: ServiceKind::Seerr,
+            url: url.into(),
+            api_key: "k".into(),
+            verify_tls: true,
+            timeout_secs: 5,
+        };
+        Service::new(&cfg, Arc::new(Metrics::new())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn seerr_csrf_fetched_retried_and_cached() {
+        let secret = Arc::new(std::sync::Mutex::new("one".to_string()));
+        let (url, log) = fake_seerr(true, secret.clone()).await;
+        let s = seerr_service(&url);
+
+        let r = s.seerr_request("movie", 603, &[]).await.unwrap();
+        assert_eq!(r["id"], 77);
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "POST /api/v1/request 403",
+                "GET /api/v1/status 200",
+                "POST /api/v1/request 201"
+            ]
+        );
+
+        // cached: one request
+        log.lock().unwrap().clear();
+        s.seerr_moderate(5, "approve").await.unwrap();
+        assert_eq!(*log.lock().unwrap(), ["POST /api/v1/request/5/approve 201"]);
+
+        // server rotated its secret: stale token refused, refreshed, retried once
+        *secret.lock().unwrap() = "two".into();
+        log.lock().unwrap().clear();
+        s.seerr_moderate(6, "decline").await.unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "POST /api/v1/request/6/decline 403",
+                "GET /api/v1/status 200",
+                "POST /api/v1/request/6/decline 201"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn seerr_without_csrf_needs_no_extra_request() {
+        let (url, log) = fake_seerr(false, Arc::new(std::sync::Mutex::new("x".into()))).await;
+        let s = seerr_service(&url);
+        s.seerr_request("tv", 95396, &[1, 2]).await.unwrap();
+        assert_eq!(*log.lock().unwrap(), ["POST /api/v1/request 201"]);
     }
 }

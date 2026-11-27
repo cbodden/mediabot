@@ -405,6 +405,9 @@ Notes:
   names. A library count it can't find shows as `?`. If something looks wrong,
   [open an issue](https://github.com/cbodden/mediabot/issues) with the output of
   `/api/v1/libraries` or `/api/v1/system/playback/sessions`.
+- **Seerr** with **CSRF Protection** on (Settings → Network) is supported: Seerr checks writes even when
+  they use the API key, so for `request`, `approve` and `decline` the bot fetches Seerr's CSRF cookies and
+  sends the token back. Reads don't need it.
 - **Tautulli** reports on the same Plex server you may also list as `plex`, so `np` then shows those streams
   twice. Configure whichever you prefer.
 

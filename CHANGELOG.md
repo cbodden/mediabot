@@ -9,6 +9,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Seerr: `request`, `approve` and `decline` failed with `HTTP 403 {"message":"invalid csrf token"}` when Seerr's
+  **CSRF Protection** is on (Settings → Network), because Seerr checks writes even when they use the API key.
+  The bot now fetches Seerr's CSRF cookies, retries the write once with them and the `X-XSRF-TOKEN` header,
+  and reuses them for later writes; with CSRF Protection off nothing changes (#6)
+
 ### Added
 - `docs/COMMANDS.md`: every command with usage, required role, aliases, limits and examples. It is generated
   from the command table in `src/commands.rs` (the same table `!help` uses); a test fails CI if it's stale
