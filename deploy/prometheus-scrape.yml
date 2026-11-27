@@ -1,0 +1,9 @@
+# Add under scrape_configs: in prometheus.yml
+- job_name: mediabot
+  scrape_interval: 30s
+  static_configs:
+    - targets: ["mediabot-host:8088"]
+  # If [web] metrics_auth = true:
+  # basic_auth: { username: admin, password_file: /etc/prometheus/mediabot.pw }
+  # If the panel is served over TLS:
+  # scheme: https

@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mediabot</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677086; --line: #e2e5ec;
+  --accent: #3b6fd8; --ok: #1f8a4c; --bad: #c43d3d; --warn: #b7791f; --code: #f0f2f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #12151b; --panel: #1b1f27; --text: #e4e7ee; --muted: #8d96a8; --line: #2b313c;
+          --accent: #7ea2ff; --ok: #4cc17f; --bad: #ff7272; --warn: #e3b04b; --code: #232833; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
+         background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+header .sp { flex: 1; }
+main { max-width: 1200px; margin: 0 auto; padding: 18px 16px 40px; display: grid; gap: 16px;
+       grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; }
+tr:last-child td { border-bottom: 0; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+form.row, .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+input, select, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line);
+                        background: var(--bg); color: var(--text); min-width: 0; }
+input { flex: 1 1 140px; }
+button { background: var(--accent); color: #fff; border-color: transparent; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); border-color: var(--line); }
+button.danger { background: transparent; color: var(--bad); border-color: var(--line); }
+button:disabled { opacity: .5; cursor: default; }
+pre { background: var(--code); border-radius: 8px; padding: 10px; margin: 10px 0 0; overflow: auto;
+      font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+#logs { height: 340px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.scroll { overflow-x: auto; }
+#toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
+         background: var(--text); color: var(--bg); opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.show { opacity: .95; }
+small { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>mediabot</h1>
+  <span id="irc-pill" class="pill muted">…</span>
+  <span class="sp"></span>
+  <small id="ver"></small>
+  <a class="muted" href="/metrics" target="_blank" rel="noopener">/metrics</a>
+  <button class="ghost" id="reconnect">Reconnect IRC</button>
+</header>
+<main>
+  <section>
+    <h2>IRC</h2>
+    <div class="kv" id="irc"></div>
+  </section>
+
+  <section>
+    <h2>Console</h2>
+    <small>Run any bot command as owner, e.g. <code>np</code>, <code>queue</code>, <code>search dune</code>, <code>sonarr upcoming 14</code>.</small>
+    <form class="row" id="cmd-form">
+      <input id="cmd" placeholder="np" autocomplete="off" aria-label="Command">
+      <button>Run</button>
+    </form>
+    <pre id="cmd-out" hidden></pre>
+  </section>
+
+  <section class="wide">
+    <h2>Services</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Version</th><th>Summary</th><th>Polled</th><th></th></tr></thead>
+      <tbody id="services"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Users</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Account / mask</th><th>Role</th><th>Added by</th><th></th></tr></thead>
+      <tbody id="users"></tbody>
+    </table></div>
+    <form class="row" id="user-form">
+      <input id="user-id" placeholder="NickServ account or nick!user@host" required aria-label="User">
+      <select id="user-role" aria-label="Role"><option value="readonly">read-only</option><option value="admin">admin</option></select>
+      <button>Add / update</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Channels</h2>
+    <table>
+      <thead><tr><th>Channel</th><th>Unknown users get</th><th>State</th><th></th></tr></thead>
+      <tbody id="channels"></tbody>
+    </table>
+    <form class="row" id="chan-form">
+      <input id="chan-name" placeholder="#channel" required aria-label="Channel">
+      <input id="chan-key" placeholder="key (optional)" aria-label="Key" style="flex-basis:90px">
+      <select id="chan-role" aria-label="Default role"><option value="none">nothing</option><option value="readonly">read-only</option></select>
+      <button>Join</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Send message</h2>
+    <form class="row" id="say-form">
+      <input id="say-target" placeholder="#channel or nick" required aria-label="Target" style="flex-basis:120px">
+      <input id="say-text" placeholder="message" required aria-label="Message" style="flex-basis:220px">
+      <button>Send</button>
+    </form>
+  </section>
+
+  <section class="wide">
+    <h2>Logs <small>(info and above, live)</small></h2>
+    <pre id="logs"></pre>
+  </section>
+</main>
+<div id="toast" role="status"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e[k] = v;
+  }
+  for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(k ?? ""));
+  return e;
+};
+function toast(msg, bad) {
+  const t = $("toast"); t.textContent = msg; t.style.background = bad ? "var(--bad)" : "";
+  t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3000);
+}
+async function api(path, method = "GET", body) {
+  const opts = { method, headers: { "X-Mediabot": "1" } };
+  if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+const ago = (iso) => {
+  if (!iso) return "never";
+  const s = Math.round((Date.now() - new Date(iso)) / 1000);
+  return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s / 60) + "m ago" : Math.round(s / 3600) + "h ago";
+};
+const dur = (iso) => {
+  if (!iso) return "-";
+  let s = Math.round((Date.now() - new Date(iso)) / 1000);
+  const d = Math.floor(s / 86400); s %= 86400;
+  return (d ? d + "d " : "") + Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+};
+function replace(id, rows) { $(id).replaceChildren(...rows); }
+
+async function loadStatus() {
+  const s = await api("/api/status");
+  $("ver").textContent = "v" + s.version;
+  const i = s.irc;
+  const pill = $("irc-pill");
+  pill.textContent = i.connected ? "connected" : "disconnected";
+  pill.className = "pill " + (i.connected ? "ok" : "bad");
+  const kv = [
+    ["Server", i.server || "-"], ["Nick", i.nick || "-"], ["Account", i.account || "(not identified)"],
+    ["Channels", [...(i.channels || [])].join(" ") || "-"], ["Connected for", dur(i.connected_since)],
+    ["Capabilities", (i.caps || []).join(" ") || "-"], ["Bot uptime", dur(s.started)],
+    ["Command prefix", s.prefix], ["Services up", `${s.services.up} / ${s.services.total}`],
+  ];
+  if (i.last_error) kv.push(["Last error", i.last_error]);
+  $("irc").replaceChildren(...kv.flatMap(([k, v]) => [el("div", {}, k), el("div", {}, v)]));
+}
+async function loadServices() {
+  const list = await api("/api/services");
+  replace("services", list.length ? list.map((s) => el("tr", {},
+    el("td", {}, el("b", {}, s.name)), el("td", {}, s.kind),
+    el("td", {}, !s.last_poll ? el("span", { class: "pill muted" }, "pending")
+      : el("span", { class: "pill " + (s.up ? "ok" : "bad"), title: s.error || "" }, s.up ? "up" : "down")),
+    el("td", {}, s.version || "-"),
+    el("td", {}, s.up ? (s.summary || []).join(" · ") : el("span", { class: "bad" }, s.error || "")),
+    el("td", { class: "muted" }, ago(s.last_poll) + (s.latency_ms != null ? ` (${s.latency_ms} ms)` : "")),
+    el("td", {}, el("button", { class: "ghost", onclick: async (e) => {
+      e.target.disabled = true;
+      try { const r = await api(`/api/services/${encodeURIComponent(s.name)}/test`, "POST");
+            toast(`${s.name}: OK, version ${r.version} (${r.latency_ms} ms)`); }
+      catch (err) { toast(`${s.name}: ${err.message}`, true); }
+      e.target.disabled = false;
+    } }, "Test")),
+  )) : [el("tr", {}, el("td", { colSpan: 7, class: "muted" }, "No services configured."))]);
+}
+async function loadUsers() {
+  const u = await api("/api/users");
+  const rows = u.owners.map((o) => el("tr", {}, el("td", {}, o), el("td", {}, el("span", { class: "pill warn" }, "owner")),
+    el("td", { class: "muted" }, "config file"), el("td")));
+  for (const x of u.users) rows.push(el("tr", {},
+    el("td", {}, x.id), el("td", {}, el("span", { class: "pill " + (x.role === "admin" ? "ok" : "muted") }, x.role)),
+    el("td", { class: "muted", title: x.added_at }, x.added_by || "-"),
+    el("td", {}, el("button", { class: "danger", onclick: async () => {
+      if (!confirm(`Remove ${x.id}?`)) return;
+      try { await api("/api/users/" + encodeURIComponent(x.id), "DELETE"); toast("Removed " + x.id); loadUsers(); }
+      catch (err) { toast(err.message, true); }
+    } }, "Remove"))));
+  replace("users", rows.length ? rows : [el("tr", {}, el("td", { colSpan: 4, class: "muted" }, "No users yet."))]);
+}
+async function loadChannels() {
+  const list = await api("/api/channels");
+  replace("channels", list.length ? list.map((c) => el("tr", {},
+    el("td", {}, c.name + (c.has_key ? " 🔑" : "")),
+    el("td", {}, c.default_role === "none" ? "nothing" : c.default_role),
+    el("td", {}, el("span", { class: "pill " + (c.joined ? "ok" : "muted") }, c.joined ? "joined" : "not joined")),
+    el("td", {}, el("button", { class: "danger", onclick: async () => {
+      try { await api("/api/channels/part", "POST", { name: c.name }); toast("Leaving " + c.name); setTimeout(loadChannels, 800); }
+      catch (err) { toast(err.message, true); }
+    } }, "Part")),
+  )) : [el("tr", {}, el("td", { colSpan: 4, class: "muted" }, "No channels."))]);
+}
+let logSeq = 0;
+async function loadLogs() {
+  const lines = await api("/api/logs?since=" + logSeq);
+  if (!lines.length) return;
+  const pre = $("logs");
+  const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  for (const l of lines) {
+    logSeq = l.seq;
+    const cls = l.level === "ERROR" ? "bad" : l.level === "WARN" ? "warn" : "";
+    pre.append(el("span", { class: cls },
+      `${l.ts.slice(11, 19)} ${l.level.padEnd(5)} ${l.target === "audit" ? "[audit] " : ""}${l.message}\n`));
+  }
+  while (pre.childNodes.length > 1000) pre.firstChild.remove();
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+$("cmd-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const out = $("cmd-out"); out.hidden = false; out.textContent = "…";
+  try { const r = await api("/api/command", "POST", { command: $("cmd").value }); out.textContent = r.lines.join("\n") || "(no output)"; }
+  catch (err) { out.textContent = "error: " + err.message; }
+});
+$("user-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try { await api("/api/users", "POST", { id: $("user-id").value.trim(), role: $("user-role").value });
+        toast("Saved " + $("user-id").value); $("user-id").value = ""; loadUsers(); }
+  catch (err) { toast(err.message, true); }
+});
+$("chan-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = { name: $("chan-name").value.trim(), default_role: $("chan-role").value };
+  if ($("chan-key").value) body.key = $("chan-key").value;
+  try { await api("/api/channels", "POST", body); toast("Joining " + body.name);
+        $("chan-name").value = ""; $("chan-key").value = ""; setTimeout(loadChannels, 1500); }
+  catch (err) { toast(err.message, true); }
+});
+$("say-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try { await api("/api/say", "POST", { target: $("say-target").value.trim(), text: $("say-text").value });
+        toast("Sent"); $("say-text").value = ""; }
+  catch (err) { toast(err.message, true); }
+});
+$("reconnect").addEventListener("click", async () => {
+  if (!confirm("Disconnect and reconnect to IRC?")) return;
+  try { await api("/api/reconnect", "POST"); toast("Reconnecting…"); } catch (err) { toast(err.message, true); }
+});
+
+const safe = (f) => () => f().catch((e) => console.warn(e));
+const refresh = () => Promise.all([loadStatus(), loadServices(), loadChannels()].map((p) => p.catch(console.warn)));
+refresh(); safe(loadUsers)(); safe(loadLogs)();
+setInterval(refresh, 5000);
+setInterval(safe(loadLogs), 2000);
+</script>
+</body>
+</html>

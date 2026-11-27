@@ -1,0 +1,20 @@
+[Unit]
+Description=mediabot IRC media bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mediabot
+WorkingDirectory=/var/lib/mediabot
+EnvironmentFile=-/etc/mediabot/env
+ExecStart=/usr/local/bin/mediabot --config /etc/mediabot/config.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mediabot
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
