@@ -103,7 +103,7 @@ credentials to cross-site requests.
 
 ## Docker
 
-Multi-arch images (**amd64 + arm64**) on Alpine, about 20 MB, holding a static musl binary,
+Multi-arch images (**amd64 + arm64**) on Alpine, about 4.5 MB to pull, holding a static musl binary,
 `ca-certificates` and nothing else. The container runs as uid 10001.
 
 | registry | image |

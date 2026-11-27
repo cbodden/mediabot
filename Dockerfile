@@ -1,5 +1,5 @@
 # syntax=mirror.gcr.io/docker/dockerfile:1
-## two alpine stages: a static musl build, then plain alpine + the binary (~20 MB)
+## two alpine stages: a static musl build, then plain alpine + the binary (~4.5 MB compressed)
 ## bases come from mirror.gcr.io (google's mirror of docker hub) so builds never touch docker hub's pull limit
 ARG ALPINE_VERSION=3.23
 
