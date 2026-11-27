@@ -17,6 +17,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of the bot, so the container exited immediately with no output and restarted in a loop. The image now builds
   once from the real sources, and the build fails unless the binary reports exactly the version in
   `Cargo.toml`; the final image checks it again
+- README / Dockerfile: the image is ~8.6 MB to download (~29 MB on disk); the earlier "~4.5 MB" was
+  measured on the broken 0.1.0 image
 
 ### Changed
 - README rewritten as a step-by-step guide: setup in five steps, commands grouped by task, and full
